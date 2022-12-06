@@ -1,0 +1,33 @@
+This software is licensed by Liberty Global Service B.V. under the GNU General
+Public License version 2 only, as per COPYING.GPLv2 and subject to any
+additional licenses included in this file.
+
+Some ideas and code snippets used in memcr were adapted from ptrace-parasite
+and CRIU projects.
+
+ - ptrace-parasite (https://code.google.com/archive/p/ptrace-parasite)
+   Licensed under the GPLv2.0 License
+
+ - CRIU (https://github.com/checkpoint-restore/criu)
+   Licensed under the GPLv2.0 License
+
+Most notably the mechanism of parasite injection with a sequence of ptrace()
+calls, x86_64 insertion blobs and syscalls code were reused.
+
+Please use the following copyright for source within this repository:
+
+Copyright (C) <YEAR> <NAME>
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation, version 2
+of the license.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this library; if not, write to the Free Software Foundation,
+Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
