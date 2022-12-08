@@ -78,7 +78,7 @@ struct vm_area {
 };
 
 static int pid;
-static char *dir;
+static char *dump_dir;
 static int nowait;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
@@ -108,18 +108,18 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 {
 	int ret;
 	char path[PATH_MAX];
-	DIR *dir;
+	DIR *task_dir;
 	struct dirent *ent;
 	int nr_threads = 0;
 
 	snprintf(path, sizeof(path), "/proc/%d/task", pid);
-	dir = opendir(path);
-	if (!dir) {
+	task_dir = opendir(path);
+	if (!task_dir) {
 		fprintf(stderr, "opendir() %s: %m\n", path);
 		return -errno;
 	}
 
-	while ((ent = readdir(dir))) {
+	while ((ent = readdir(task_dir))) {
 		pid_t tid;
 		char *eptr;
 
@@ -144,7 +144,7 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 		}
 	}
 
-	closedir(dir);
+	closedir(task_dir);
 	return ret;
 }
 
@@ -766,7 +766,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 	int cd;
 	int idx;
 
-	snprintf(name, sizeof(name), "%s/pages-%d.img", dir, pid);
+	snprintf(name, sizeof(name), "%s/pages-%d.img", dump_dir, pid);
 
 	fd = open(name, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
@@ -837,7 +837,7 @@ static int target_set_pages(pid_t pid)
 	char name[128];
 	int fd;
 
-	snprintf(name, sizeof(name), "%s/pages-%d.img", dir, pid);
+	snprintf(name, sizeof(name), "%s/pages-%d.img", dump_dir, pid);
 
 	fd = open(name, O_RDONLY);
 	if (fd < 0) {
@@ -955,7 +955,7 @@ static int cmd_sequencer(pid_t pid)
 		exit(1);
 	}
 	fprintf(stdout, "[i] download took %lu ms\n", diff_ms(&ts));
-	fprintf(stdout, "[i] stored at %s/pages-%d.img\n", dir, pid);
+	fprintf(stdout, "[i] stored at %s/pages-%d.img\n", dump_dir, pid);
 
 	get_target_rss(pid, &vms_b);
 
@@ -1337,7 +1337,7 @@ int main(int argc, char *argv[])
 		{ NULL,			0,	0,	0}
 	};
 
-	dir = "/tmp";
+	dump_dir = "/tmp";
 
 	while ((opt = getopt_long(argc, argv, "hvp:d:n", long_options, &option_index)) != -1) {
 		switch (opt) {
@@ -1348,7 +1348,7 @@ int main(int argc, char *argv[])
 				pid = atoi(optarg);
 				break;
 			case 'd':
-				dir = optarg;
+				dump_dir = optarg;
 				break;
 			case 'n':
 				nowait = 1;
@@ -1376,3 +1376,4 @@ int main(int argc, char *argv[])
 
 	return interrupted ? 1 : 0;
 }
+
