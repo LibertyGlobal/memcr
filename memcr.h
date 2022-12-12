@@ -30,7 +30,7 @@
 #endif
 
 struct parasite_args {
-	char addr[32]; /* abstract socket address */
+	char addr[108]; /* abstract or filesystem socket address */
 };
 
 typedef enum {
@@ -66,3 +66,4 @@ struct vm_page {
 } __attribute__((packed));
 
 #endif
+

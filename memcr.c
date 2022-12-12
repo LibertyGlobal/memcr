@@ -79,6 +79,7 @@ struct vm_area {
 
 static int pid;
 static char *dump_dir;
+static char *socket_dir;
 static int nowait;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
@@ -258,6 +259,16 @@ static int unseize_target(void)
 	return ret;
 }
 
+static inline void create_filesystem_socketname(char * addr, int addr_size, int pid)
+{
+	snprintf(addr, addr_size, "%s/memcr%u", socket_dir, pid);
+}
+
+static inline void create_abstract_socketname(char * addr, int addr_size, int pid)
+{
+	snprintf(addr, addr_size, "#memcr%u", pid);
+}
+
 static int xconnect(int pid)
 {
 	int cd;
@@ -272,8 +283,13 @@ static int xconnect(int pid)
 	}
 
 	addr.sun_family = PF_UNIX;
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "#memcr%u", pid);
-	addr.sun_path[0] = '\0';
+
+	if (socket_dir) {
+		create_filesystem_socketname(addr.sun_path, sizeof(addr.sun_path), pid);
+	} else {
+		create_abstract_socketname(addr.sun_path, sizeof(addr.sun_path), pid);
+		addr.sun_path[0] = '\0';
+	}
 
 	/* parasite needs some time to start listening on a socket */
 retry:
@@ -900,6 +916,13 @@ static int target_cmd_end(int pid)
 	return ret;
 }
 
+static void cleanup_socket(int pid)
+{
+	char socketaddr[108];
+	create_filesystem_socketname(socketaddr, sizeof(socketaddr), pid);
+	remove(socketaddr);
+}
+
 static long diff_ms(struct timespec *ts)
 {
 	struct timespec tsn;
@@ -990,6 +1013,10 @@ static int cmd_sequencer(pid_t pid)
 	 * handled once previous one (set pages) is done.
 	 */
 	target_cmd_end(pid);
+
+	if (socket_dir) {
+		cleanup_socket(pid);
+	}
 
 	return 0;
 }
@@ -1115,7 +1142,12 @@ static int setup_parasite_args(pid_t pid, void *base)
 	int i;
 
 	pa_dst = (unsigned long *)PARASITE_ARGS_ADDR(base);
-	snprintf(pa.addr, sizeof(pa.addr), "#memcr%u", pid);
+
+	if (socket_dir) {
+		create_filesystem_socketname(pa.addr, sizeof(pa.addr), pid);
+	} else {
+		create_abstract_socketname(pa.addr, sizeof(pa.addr), pid);
+	}
 
 	for (i = 0; i < DIV_ROUND_UP(sizeof(struct parasite_args), sizeof(unsigned long)); i++) {
 		assert(!ptrace(PTRACE_POKEDATA, pid, pa_dst + i, *(pa_src + i)));
@@ -1298,6 +1330,7 @@ static int execute_parasite(pid_t pid)
 		assert(!ptrace(PTRACE_POKEDATA, pid, sp + i, (void *)saved_stack[i]));
 
 	free(saved_code);
+
 	return 0;
 }
 
@@ -1319,6 +1352,8 @@ static void usage(const char *name, int status)
 		"  -h --help\thelp\n" \
 		"  -p --pid\ttarget processs pid\n" \
 		"  -d --dir\tdir where memory dump is stored (defaults to /tmp)\n" \
+		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
+		"        (abstract socket will be used if no path specified)\n" \
 		"  -n --nowait\tno wait for key press\n",
 		name);
 	exit(status);
@@ -1330,16 +1365,18 @@ int main(int argc, char *argv[])
 	int opt;
 	int option_index;
 	static struct option long_options[] = {
-		{ "help",		0,	0,	0},
-		{ "pid",		1,	0,	0},
-		{ "dir",		1,	0,	0},
-		{ "nowait",		0,	0,	0},
+		{ "help",			0,	0,	0},
+		{ "pid",			1,	0,	0},
+		{ "dir",			1,	0,	0},
+		{ "parasite-socket-dir",	1,	0,	0},
+		{ "nowait",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
 
 	dump_dir = "/tmp";
+	socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hvp:d:n", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hvp:d:S:n", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -1349,6 +1386,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'd':
 				dump_dir = optarg;
+				break;
+			case 'S':
+				socket_dir = optarg;
 				break;
 			case 'n':
 				nowait = 1;
