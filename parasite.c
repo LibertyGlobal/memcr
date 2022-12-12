@@ -376,7 +376,8 @@ void __attribute__((__used__)) service(unsigned int cmd, void *args)
 
 	addr.sun_family = PF_UNIX;
 	xstrcpy(addr.sun_path, pa->addr);
-	addr.sun_path[0] = '\0';
+	if ('#' == addr.sun_path[0])
+		addr.sun_path[0] = '\0';
 
 	ret = sys_bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
 	if (ret) {
@@ -401,3 +402,4 @@ void __attribute__((__used__)) service(unsigned int cmd, void *args)
 	sys_close(srvd);
 	sys_exit(0);
 }
+
