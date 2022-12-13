@@ -551,7 +551,7 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 		char file_path[128] = { 0 };
 		char flags = FLAG_NONE;
 
-		ret = sscanf(buf, "%lx-%lx %c%c%c%c %lx %02x:%02x %lu %123s", &start, &end, &r, &w, &x, &s, &pgoff, &dev_maj, &dev_min, &ino, file_path);
+		ret = sscanf(buf, "%lx-%lx %c%c%c%c %lx %x:%x %lu %123s", &start, &end, &r, &w, &x, &s, &pgoff, &dev_maj, &dev_min, &ino, file_path);
 		if (ret < 10) {
 			fprintf(stderr, "can't parse: %s", buf);
 			goto err;
