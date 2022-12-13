@@ -1193,24 +1193,25 @@ static int execute_parasite(pid_t pid)
 	 * space.  Determine the position and save the original code.
 	 */
 	pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-#if 0
 	for (i = 0; i < count; i++) {
 		saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, pc + i, NULL);
-		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), saved_stack[i]);
-	}
+#if 0
+		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), saved_code[i]);
 #endif
+	}
+
 	/*
 	 * Save and restore some bytes below %rsp so that blobs can use it
 	 * as writeable scratch area.  This wouldn't be necessary if mmap
 	 * is done earlier.
 	 */
 	sp = get_cpu_regs_sp(&regs) - sizeof(saved_stack);
-#if 0
 	for (i = 0; i < sizeof(saved_stack) / sizeof(saved_stack[0]); i++) {
 		saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, sp + i, NULL);
+#if 0
 		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), saved_stack[i]);
-	}
 #endif
+	}
 
 #if 0
 	/* say hi! */
