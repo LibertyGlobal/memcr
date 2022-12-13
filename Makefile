@@ -18,7 +18,18 @@
 
 MAKEFLAGS += -rR
 
-CFLAGS = -Wall -g
+ifeq ("$(origin CC)", "default")
+    undefine CC
+endif
+ifeq ("$(origin LD)", "default")
+    undefine LD
+endif
+
+CFLAGS = -Wall -Werror
+# memcr CFLAGS
+MCFLAGS = $(CFLAGS) -g
+# parasite CFLAGS
+PCFLAGS = $(CFLAGS)
 
 ifeq ("$(origin O)", "command line")
     GCC_O = $(O)
@@ -27,33 +38,34 @@ ifndef GCC_O
     GCC_O = 0
 endif
 
-ifeq ($(GCC_O),1)
-    CFLAGS += -O2
+ifeq ($(GCC_O), 1)
+    MCFLAGS += -O2
 else
-    CFLAGS += -O0
-    CFLAGS += -fstack-protector-all -fstack-protector-strong
+    MCFLAGS += -O0
+    MCFLAGS += -fstack-protector-all -fstack-protector-strong
 endif
 
 ARCH ?= x86_64
 
+CC ?= $(CROSS_COMPILE)gcc
+LD ?= $(CROSS_COMPILE)ld.bfd
+OBJCOPY ?= $(CROSS_COMPILE)objcopy
+
+ifeq ($(shell $(LD) -v | grep "GNU ld"),)
+    LD := $(LD:-ld=-ld.bfd)
+endif
+
 ifeq ($(ARCH), x86_64)
-    CC = gcc
-    LD = ld
-    OBJCOPY = objcopy
-    LDARCH = i386:x86-64
-    HSARCH = x86-64
+    # do nothing
 else ifeq ($(ARCH), arm)
-    CC = arm-rdk-linux-gnueabi-gcc
-    LD = arm-rdk-linux-gnueabi-ld.bfd
-    OBJCOPY = arm-rdk-linux-gnueabi-objcopy
-    SYSROOT = --sysroot=$(SYSROOT_DIR)
-    LDARCH = arm
-    HSARCH = arm
+    MCFLAGS += -marm
+    PCFLAGS += -marm
 else
     $(error unsupported arch "$(ARCH)")
 endif
 
-CFLAGS += $(SYSROOT)
+PCFLAGS = -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -fomit-frame-pointer -Wa,--noexecstack
+
 GOFF = ./gen-offsets.sh
 
 B ?= .
@@ -62,13 +74,13 @@ B ?= .
 all: $(B)/memcr
 
 $(B)/parasite-head.o: arch/$(ARCH)/parasite-head.S
-	$(CC) -Wall -Wstrict-prototypes -O0 -fno-stack-protector -fpie -nostdlib -fomit-frame-pointer -Wa,--noexecstack $(SYSROOT) -c $< -o $@
+	$(CC) $(PCFLAGS) -O0 -c $< -o $@
 
 $(B)/syscall.o: arch/syscall.c arch/$(ARCH)/linux-abi.h
-	$(CC) -Wall -Wstrict-prototypes -O0 -fno-stack-protector -fpie -nostdlib -fomit-frame-pointer -Wa,--noexecstack $(SYSROOT) -c $< -o $@
+	$(CC) $(PCFLAGS) -O0 -c $< -o $@
 
 $(B)/parasite.o: parasite.c memcr.h arch/syscall.h
-	$(CC) -Wall -Wstrict-prototypes -O2 -fno-stack-protector -fpie -nostdlib -fomit-frame-pointer -Wa,--noexecstack $(SYSROOT) -c $< -o $@
+	$(CC) $(PCFLAGS) -O2 -c $< -o $@
 
 $(B)/parasite.bin.o: $(B)/parasite-head.o $(B)/syscall.o $(B)/parasite.o arch/$(ARCH)/parasite.lds.S
 	$(LD) -T arch/$(ARCH)/parasite.lds.S -o $@ $(B)/parasite-head.o $(B)/syscall.o $(B)/parasite.o
@@ -80,16 +92,16 @@ $(B)/parasite-blob.h: $(B)/parasite.bin arch/$(ARCH)/parasite.lds.S
 	$(GOFF) parasite $(B) > $@
 
 $(B)/enter.o: arch/$(ARCH)/enter.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(MCFLAGS) -c $< -o $@
 
 $(B)/cpu.o: arch/$(ARCH)/cpu.c
-	$(CC) $(CFLAGS) -c $^ -o $@
+	$(CC) $(MCFLAGS) -c $^ -o $@
 
 $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
-	$(CC) $(CFLAGS) -I$(B) -c $< -o $@
+	$(CC) $(MCFLAGS) -I$(B) -c $< -o $@
 
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
-	$(CC) $(CFLAGS) $^ -o $@
+	$(CC) $(MCFLAGS) $^ -o $@
 
 clean:
 	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr
