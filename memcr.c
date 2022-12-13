@@ -889,6 +889,7 @@ static int target_set_pages(pid_t pid)
 
 	close(cd);
 	close(fd);
+	unlink(name);
 	return ret;
 }
 
