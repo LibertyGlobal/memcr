@@ -45,8 +45,6 @@ else
     MCFLAGS += -fstack-protector-all -fstack-protector-strong
 endif
 
-ARCH ?= x86_64
-
 CC ?= $(CROSS_COMPILE)gcc
 LD ?= $(CROSS_COMPILE)ld.bfd
 OBJCOPY ?= $(CROSS_COMPILE)objcopy
@@ -55,13 +53,25 @@ ifeq ($(shell $(LD) -v | grep "GNU ld"),)
     LD := $(LD:-ld=-ld.bfd)
 endif
 
+ifndef ARCH
+    # try to detect the target architecture
+    GCC_TARGET=$(shell $(CC) -dumpmachine)
+    ifeq ($(findstring x86_64, $(GCC_TARGET)), x86_64)
+        ARCH = x86_64
+    else ifeq ($(findstring arm, $(GCC_TARGET)), arm)
+        ARCH = arm
+    else
+        $(error unable to detect arch: $(GCC_TARGET))
+    endif
+endif
+
 ifeq ($(ARCH), x86_64)
     # do nothing
 else ifeq ($(ARCH), arm)
     MCFLAGS += -marm
     PCFLAGS += -marm
 else
-    $(error unsupported arch "$(ARCH)")
+    $(error unsupported arch: $(ARCH))
 endif
 
 PCFLAGS = -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -ffreestanding -fomit-frame-pointer -Wa,--noexecstack
