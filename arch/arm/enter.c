@@ -86,8 +86,7 @@ static void __attribute__((used)) container(void)
 		".global clone_blob				\n"
 		"clone_blob:					\n"
 		"mov r7, #120					\n" /* __NR_clone */
-		"movw r0, #0x2f00				\n" /* r0 = (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM | CLONE_PTRACE) */
-		"movt r0, #0x8005				\n"
+		"ldr r0, CLONE_FLAGS				\n"
 		"mov r1, #0					\n" /* @newsp */
 		"mov r2, #0					\n" /* @parent_tid */
 		"mov r3, #0					\n" /* @child_tid */
@@ -95,6 +94,8 @@ static void __attribute__((used)) container(void)
 		"cmp r0, #0					\n"
 		"bxeq r8					\n" /* bx parasite */
 		"udf #16					\n" /* SIGTRAP */
+		"CLONE_FLAGS:					\n"
+		".word 0x80052f00				\n" /* (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM | CLONE_PTRACE) */
 		".global clone_blob_size			\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
