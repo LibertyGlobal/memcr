@@ -47,6 +47,7 @@
 #include "arch/enter.h"
 #include "parasite-blob.h"
 
+#define NT_PRSTATUS 1
 
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
 #define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
@@ -1025,6 +1026,7 @@ static int cmd_sequencer(pid_t pid)
 static unsigned long execute_blob(pid_t tid, unsigned long *pc, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
 {
 	int ret;
+	struct iovec iov;
 	struct user_regs_struct uregs, saved_uregs;
 
 	siginfo_t si;
@@ -1040,11 +1042,13 @@ static unsigned long execute_blob(pid_t tid, unsigned long *pc, const char *blob
 	}
 
 retry:
-	assert(!ptrace(PTRACE_GETREGS, tid, NULL, &uregs));
+	iov.iov_base = (void *)&uregs;
+	iov.iov_len = sizeof(uregs);
+	assert(!ptrace(PTRACE_GETREGSET, tid, NT_PRSTATUS, &iov));
 	saved_uregs = uregs;
 
 	set_cpu_regs(&uregs, pc, arg0 ? *arg0 : 0, arg1 ? *arg1 : 0);
-	assert(!ptrace(PTRACE_SETREGS, tid, NULL, &uregs));
+	assert(!ptrace(PTRACE_SETREGSET, tid, NT_PRSTATUS, &iov));
 
 	/* let the blob run, upon completion it will trigger debug trap */
 	assert(!ptrace(PTRACE_CONT, tid, NULL, NULL));
@@ -1082,8 +1086,9 @@ retry:
 #if defined(__x86_64__)
 		assert(si.si_code <= 0); /* TODO arm */
 #endif
-
-		assert(!ptrace(PTRACE_SETREGS, tid, NULL, (void *)&saved_uregs));
+		iov.iov_base = (void *)&saved_uregs;
+		iov.iov_len = sizeof(saved_uregs);
+		assert(!ptrace(PTRACE_SETREGSET, tid, NT_PRSTATUS, &iov));
 		assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
 		assert(!ptrace(PTRACE_CONT, tid, NULL,
 			       (void *)(unsigned long)si.si_signo));
@@ -1114,8 +1119,12 @@ retry:
 	assert(SI_EVENT(si.si_code) == PTRACE_EVENT_STOP);
 
 	/* retrieve return value and restore registers */
-	assert(!ptrace(PTRACE_GETREGS, tid, NULL, &uregs));
-	assert(!ptrace(PTRACE_SETREGS, tid, NULL, &saved_uregs));
+	iov.iov_base = (void *)&uregs;
+	iov.iov_len = sizeof(uregs);
+	assert(!ptrace(PTRACE_GETREGSET, tid, NT_PRSTATUS, &iov));
+	iov.iov_base = (void *)&saved_uregs;
+	iov.iov_len = sizeof(saved_uregs);
+	assert(!ptrace(PTRACE_SETREGSET, tid, NT_PRSTATUS, &iov));
 
 	if (arg0)
 		*arg0 = get_cpu_syscall_arg0(&uregs);
@@ -1159,6 +1168,7 @@ static int setup_parasite_args(pid_t pid, void *base)
 
 static int execute_parasite(pid_t pid)
 {
+	struct iovec iov;
 	struct user_regs_struct regs;
 	unsigned long *pc, *sp, *saved_code, saved_stack[16];
 	unsigned long arg0, arg1, saved_sigmask, ret, *src, *dst;
@@ -1166,9 +1176,11 @@ static int execute_parasite(pid_t pid)
 	int i, count, status;
 	struct vm_skip_addr paddr;
 
-	ret = ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+	iov.iov_base = (void *)&regs;
+	iov.iov_len = sizeof(regs);
+	ret = ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov);
 	if (ret == -1) {
-		fprintf(stderr, "ptrace() PTRACE_GETREGS failed: %m\n");
+		fprintf(stderr, "ptrace() PTRACE_GETREGSET failed: %m\n");
 		assert(ret == 0);
 	}
 
