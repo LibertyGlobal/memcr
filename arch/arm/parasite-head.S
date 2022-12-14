@@ -23,13 +23,13 @@
 	.globl __parasite_head_start
 	.align 4, 0x00
 
-_parasite_head_start:
-	adr %sp, __parasite_stack
-	adr %r0, __parasite_cmd
-	ldr %r0, [%r0]
-	adr %r1, __parasite_args
+__parasite_head_start:
+	adr sp, __parasite_stack
+	adr r0, __parasite_cmd
+	ldr r0, [r0]
+	adr r1, __parasite_args
 	bl service
-	.byte 0xf0, 0x01, 0xf0, 0xe7 @ UDF #16 / SIGTRAP
+	udf #16 @ SIGTRAP
 	.align 4, 0x00
 
 __parasite_cmd:

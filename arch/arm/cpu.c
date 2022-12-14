@@ -24,9 +24,9 @@
 void set_cpu_regs(struct user_regs_struct *uregs, unsigned long *pc, unsigned long arg0, unsigned long arg1)
 {
 	uregs->orig_r0 = -1;			/* avoid end-of-syscall processing */
-	uregs->pc = (unsigned long )pc;	/* point to the injected blob */
-	uregs->r8 = arg0;				/* r8 used as arg0 to blob */
-	uregs->r9 = arg1;				/* r9 used as arg1 to blob */
+	uregs->pc = (unsigned long )pc;		/* point to the injected blob */
+	uregs->r8 = arg0;			/* r8 used as arg0 to blob */
+	uregs->r9 = arg1;			/* r9 used as arg1 to blob */
 
 	/* Make sure flags are in known state */
 	uregs->cpsr &= PSR_f | PSR_s | PSR_x | MODE32_BIT;
