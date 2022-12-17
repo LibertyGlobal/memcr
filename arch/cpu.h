@@ -27,11 +27,11 @@
 #error unsupported arch
 #endif
 
-void set_cpu_regs(struct user_regs_struct *uregs, unsigned long *pc, unsigned long arg0, unsigned long arg1);
-void *get_cpu_regs_sp(struct user_regs_struct *uregs);
-void *get_cpu_regs_pc(struct user_regs_struct *uregs);
-unsigned long get_cpu_syscall_ret(struct user_regs_struct *uregs);
-unsigned long get_cpu_syscall_arg0(struct user_regs_struct *uregs);
-void print_cpu_regs(struct user_regs_struct *regs);
+void set_cpu_regs(struct registers *regs, unsigned long *pc, unsigned long arg0, unsigned long arg1);
+void *get_cpu_regs_sp(struct registers *regs);
+void *get_cpu_regs_pc(struct registers *regs);
+unsigned long get_cpu_syscall_ret(struct registers *regs);
+unsigned long get_cpu_syscall_arg0(struct registers *regs);
+void print_cpu_regs(struct registers *regs);
 
 #endif
