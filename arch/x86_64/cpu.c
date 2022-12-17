@@ -17,44 +17,52 @@
  */
 
 #include <stdio.h>
+#include <sys/user.h>
+#include <assert.h>
 
 #include "cpu.h"
 
-void set_cpu_regs(struct user_regs_struct *uregs, unsigned long *pc, unsigned long arg0, unsigned long arg1)
+void set_cpu_regs(struct registers *regs, unsigned long *pc, unsigned long arg0, unsigned long arg1)
 {
-	uregs->orig_rax = -1;				/* avoid end-of-syscall processing */
-	uregs->rip = (unsigned long )pc;	/* point to the injected blob */
-	uregs->r15 = arg0;					/* r15 used as parameter to blob */
-	uregs->r14 = arg1;					/* r14 used as parameter to blob */
+	regs->orig_rax = -1;			/* avoid end-of-syscall processing */
+	regs->rip = (unsigned long)pc;		/* point to the injected blob */
+	regs->r15 = arg0;			/* r15 used as parameter to blob */
+	regs->r14 = arg1;			/* r14 used as parameter to blob */
 }
 
-void *get_cpu_regs_sp(struct user_regs_struct *uregs)
+void *get_cpu_regs_sp(struct registers *regs)
 {
-	return (void *)uregs->rsp;
+	return (void *)regs->rsp;
 }
 
-void *get_cpu_regs_pc(struct user_regs_struct *uregs)
+void *get_cpu_regs_pc(struct registers *regs)
 {
-	return (void *)uregs->rip;
+	return (void *)regs->rip;
 }
 
-unsigned long get_cpu_syscall_ret(struct user_regs_struct *uregs)
+unsigned long get_cpu_syscall_ret(struct registers *regs)
 {
-	return uregs->rax;
+	return regs->rax;
 }
 
-unsigned long get_cpu_syscall_arg0(struct user_regs_struct *uregs)
+unsigned long get_cpu_syscall_arg0(struct registers *regs)
 {
-	return uregs->r15;
+	return regs->r15;
 }
 
-void print_cpu_regs(struct user_regs_struct *regs)
+void print_cpu_regs(struct registers *regs)
 {
 	int idx;
-
-	const char *rg_names[] = {"r15", "r14", "r13", "r12", "bp", "bx", "r11", "r10", "r9", "r8", "ax", "cx", "dx", "si", "di", "orig_ax", "ip", "cs", "flags", "sp", "ss", "fs_base", "gs_base", "ds", "es", "fs", "gs"};
+	const char *rg_names[] = {
+		"r15", "r14", "r13", "r12", "rbp", "rbx", "r11", "r10",
+		"r9", "r8", "rax", "rcx", "rdx", "rsi", "rdi", "orig_ax",
+		"rip", "cs", "eflags", "rsp", "ss", "fs_base", "gs_base", "ds",
+		"es", "fs", "gs"
+	};
 
 	for (idx = 0; idx < sizeof(*regs)/sizeof(regs->rax); idx++) {
-		fprintf(stdout, "regs[%s]%s %016lx\n", rg_names[idx], sizeof(rg_names[idx]) > 4 ? "\t" : "\t\t", ((unsigned long *)regs)[idx]);
+		fprintf(stdout, "regs[%s]\t %0*lx\n", rg_names[idx], 2 * (int)sizeof(unsigned long), ((unsigned long *)regs)[idx]);
 	}
 }
+
+static_assert(sizeof(struct registers) == sizeof(struct user_regs_struct), "struct registers size mismatch");

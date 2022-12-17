@@ -16,12 +16,7 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-/*
- * On arm there is no user_regs_struct, instead user_regs is provided
- * but it lacks register definitions so lets provide similar type
- * to what x86_64 has
- */
-struct user_regs_struct {
+struct registers {
 	unsigned long r0;
 	unsigned long r1;
 	unsigned long r2;
