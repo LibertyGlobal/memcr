@@ -60,6 +60,8 @@ ifndef ARCH
         ARCH = x86_64
     else ifeq ($(findstring arm, $(GCC_TARGET)), arm)
         ARCH = arm
+    else ifeq ($(findstring aarch64, $(GCC_TARGET)), aarch64)
+        ARCH = arm64
     else
         $(error unable to detect arch: $(GCC_TARGET))
     endif
@@ -70,6 +72,8 @@ ifeq ($(ARCH), x86_64)
 else ifeq ($(ARCH), arm)
     MCFLAGS += -marm
     PCFLAGS += -marm
+else ifeq ($(ARCH), arm64)
+    # do nothing
 else
     $(error unsupported arch: $(ARCH))
 endif

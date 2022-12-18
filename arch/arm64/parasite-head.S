@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2022 Mariusz Kozłowski
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -16,24 +16,31 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-#ifndef __CPU_H__
-#define __CPU_H__
+#define PARASITE_STACK_SIZE 16384
+#define PARASITE_ARG_SIZE   4096
 
-#if defined(__x86_64__)
-#include "x86_64/cpu.h"
-#elif defined(__arm__)
-#include "arm/cpu.h"
-#elif defined(__aarch64__)
-#include "arm64/cpu.h"
-#else
-#error unsupported arch
-#endif
+.section .head.text, "ax"
+	.globl __parasite_head_start
+	.align 4, 0x00
 
-void set_cpu_regs(struct registers *regs, unsigned long *pc, unsigned long arg0, unsigned long arg1);
-void *get_cpu_regs_sp(struct registers *regs);
-void *get_cpu_regs_pc(struct registers *regs);
-unsigned long get_cpu_syscall_ret(struct registers *regs);
-unsigned long get_cpu_syscall_arg0(struct registers *regs);
-void print_cpu_regs(struct registers *regs);
+__parasite_head_start:
+	adr x1, __parasite_stack
+	mov sp, x1
+	adr x0, __parasite_cmd
+	ldr x0, [x0]
+	adr x1, __parasite_args
+	bl service
+	brk #0 /* SIGTRAP */
+	.align 4, 0x00
 
-#endif
+__parasite_cmd:
+	.quad 0
+
+__parasite_args:
+	.quad 0
+	.space PARASITE_ARG_SIZE, 0
+	.space PARASITE_STACK_SIZE, 0
+	.space 224, 0 /* 8+4 fill */
+
+__parasite_stack:
+	.quad 0
