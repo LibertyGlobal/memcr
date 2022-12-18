@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2022 Mariusz Kozłowski
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -16,24 +16,28 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-#ifndef __CPU_H__
-#define __CPU_H__
+OUTPUT_ARCH(aarch64)
 
-#if defined(__x86_64__)
-#include "x86_64/cpu.h"
-#elif defined(__arm__)
-#include "arm/cpu.h"
-#elif defined(__aarch64__)
-#include "arm64/cpu.h"
-#else
-#error unsupported arch
-#endif
+SECTIONS
+{
+	.blob 0x0 : {
+		*(.head.text)
+		*(.text*)
+		. = ALIGN(32);
+		*(.data*)
+		. = ALIGN(32);
+		*(.rodata*)
+		. = ALIGN(32);
+		*(.bss*)
+		. = ALIGN(32);
+	} =0x00000000
 
-void set_cpu_regs(struct registers *regs, unsigned long *pc, unsigned long arg0, unsigned long arg1);
-void *get_cpu_regs_sp(struct registers *regs);
-void *get_cpu_regs_pc(struct registers *regs);
-unsigned long get_cpu_syscall_ret(struct registers *regs);
-unsigned long get_cpu_syscall_arg0(struct registers *regs);
-void print_cpu_regs(struct registers *regs);
-
-#endif
+	/DISCARD/ : {
+		*(.debug*)
+		*(.comment*)
+		*(.note*)
+		*(.group*)
+		*(.eh_frame*)
+		*(*)
+	}
+}

@@ -1078,7 +1078,7 @@ retry:
 
 #if defined (__x86_64__)
 	if (WSTOPSIG(status) != SIGTRAP || si.si_code != SI_KERNEL) { /* TODO */
-#elif defined (__arm__)
+#elif defined (__arm__) || defined(__aarch64__)
 	if (WSTOPSIG(status) != SIGTRAP || si.si_code != 1) {
 #endif
 		/*
@@ -1126,7 +1126,7 @@ retry:
 	}
 
 	/*
-	 * Okay, this is the SIGTRAP delivery from int3/udf16. Steer the thread
+	 * Okay, this is the SIGTRAP delivery from int 3 / udf 16 / brk 0. Steer the thread
 	 * back to jobctl trap by raising INTERRUPT and squashing SIGTRAP.
 	 */
 	assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
