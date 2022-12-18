@@ -140,10 +140,8 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 		}
 
 		ret = callback(tid);
-		if (ret) {
-			fprintf(stderr, "callback() %p failed with %d\n", callback, ret);
+		if (ret)
 			break;
-		}
 	}
 
 	closedir(task_dir);
@@ -158,36 +156,37 @@ static int seize_pid(pid_t pid)
 
 	ret = ptrace(PTRACE_SEIZE, pid, NULL, 0);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_SEIZE) pid %d: ret %d, %m\n", ret, pid);
-		goto err;
+		fprintf(stderr, "ptrace(PTRACE_SEIZE) pid %d: %m\n", pid);
+		return 1;
 	}
 
 try_again:
 	ret = ptrace(PTRACE_INTERRUPT, pid, NULL, NULL);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_INTERRUPT) pid %d: ret %d, %m\n", ret, pid);
-		goto err;
+		fprintf(stderr, "ptrace(PTRACE_INTERRUPT) pid %d: %m\n", pid);
+		return 1;
 	}
 
 	ret = wait4(pid, &status, __WALL, NULL);
 	if (ret < 0) {
-		fprintf(stderr, "wait4() pid %d failed: %m\n", pid);
-		goto err;
+		fprintf(stderr, "wait4() pid %d: %m\n", pid);
+		return 1;
 	}
+
 	if (ret != pid) {
-		fprintf(stderr, "wrong task attached ret %d != pid %d\n", ret, pid);
-		goto err;
+		fprintf(stderr, "wrong pid attached ret %d != pid %d\n", ret, pid);
+		return 1;
 	}
 
 	if (!WIFSTOPPED(status)) {
-		fprintf(stderr, "task %d not stopped after seize, status %x\n", pid, status);
-		goto err;
+		fprintf(stderr, "pid %d not stopped after seize, status %x\n", pid, status);
+		return 1;
 	}
 
 	ret = ptrace(PTRACE_GETSIGINFO, pid, NULL, &si);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_GETSIGINFO) pid %d: ret %d, %m\n", ret, pid);
-		goto err;
+		fprintf(stderr, "ptrace(PTRACE_GETSIGINFO) pid %d, %m\n", pid);
+		return 1;
 	}
 
 	if (SI_EVENT(si.si_code) != PTRACE_EVENT_STOP) {
@@ -196,9 +195,10 @@ try_again:
 		 * event other than the STOP, i.e. -- a signal. Let the task
 		 * handle one and repeat.
 		 */
-		if (ptrace(PTRACE_CONT, pid, NULL, (void *)(unsigned long)si.si_signo)) {
-			fprintf(stderr, "can't continue signal handling - aborting\n");
-			goto err;
+		ret = ptrace(PTRACE_CONT, pid, NULL, (void *)(unsigned long)si.si_signo);
+		if (ret) {
+			fprintf(stderr, "can't continue signal handling: %m\n");
+			return 1;
 		}
 
 		goto try_again;
@@ -206,33 +206,37 @@ try_again:
 
 	ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(unsigned long)PTRACE_O_TRACEEXIT);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_SETOPTIONS) pid %d: ret %d, %m\n", ret, pid);
-		return -errno;
-
+		fprintf(stderr, "ptrace(PTRACE_SETOPTIONS) pid %d: %m\n", pid);
+		return 1;
 	}
 
 	tids[nr_threads++] = pid;
 
-	return ret;
-
-err:
-	return -1;
+	return 0;
 }
 
 static int seize_target(pid_t pid)
 {
 	int ret;
+	char path[PATH_MAX];
 
-	printf("[+] seizing target pid %d ", pid);
+	snprintf(path, sizeof(path), "/proc/%d", pid);
 
-	ret = iterate_pstree(pid, 0, MAX_THREADS, seize_pid);
+	ret = access(path, F_OK);
 	if (ret) {
-		fprintf(stderr, "iterate_pstree() failed: %d\n", ret);
-	} else {
-		printf("(%d %s)\n", nr_threads, nr_threads == 1 ? "thread" : "threads");
+		fprintf(stderr, "%d: No such process\n", pid);
+		return 1;
 	}
 
-	return ret;
+	printf("[+] seizing target pid %d\n", pid);
+
+	ret = iterate_pstree(pid, 0, MAX_THREADS, seize_pid);
+	if (ret)
+		return ret;
+
+	printf("[i] %d %s\n", nr_threads, nr_threads == 1 ? "thread" : "threads");
+
+	return 0;
 }
 
 static int unseize_pid(int pid)
