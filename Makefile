@@ -85,7 +85,7 @@ GOFF = ./gen-offsets.sh
 B ?= .
 
 
-all: $(B)/memcr
+all: $(B)/memcr $(B)/client
 
 $(B)/parasite-head.o: arch/$(ARCH)/parasite-head.S
 	$(CC) $(PCFLAGS) -O0 -c $< -o $@
@@ -117,7 +117,13 @@ $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
 	$(CC) $(MCFLAGS) $^ -o $@
 
+$(B)/client.o: client.c
+	$(CC) $(CFLAGS) -I$(B) -c $< -o $@
+
+$(B)/client: $(B)/client.o
+	$(CC) $(CFLAGS) $^ -o $@
+
 clean:
-	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr
+	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/client
 
 .PHONY: all clean

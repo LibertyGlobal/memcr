@@ -78,10 +78,9 @@ struct vm_area {
 	unsigned long flags;
 };
 
-static int pid;
 static char *dump_dir;
 static char *socket_dir;
-static int nowait;
+static int finish = 0;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
@@ -938,12 +937,97 @@ static long diff_ms(struct timespec *ts)
 	return (tsn.tv_sec*1000 + tsn.tv_nsec/1000000) - (ts->tv_sec*1000 + ts->tv_nsec/1000000);
 }
 
-static int cmd_sequencer(pid_t pid)
+static struct sockaddr_un make_restore_socket_address(pid_t pid)
+{
+	struct sockaddr_un addr_restore;
+	addr_restore.sun_family = PF_UNIX;
+	memset(addr_restore.sun_path, 0, sizeof(addr_restore.sun_path));
+	snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
+	addr_restore.sun_path[0] = '\0';
+
+	return addr_restore;
+}
+
+static int setup_restore_socket_worker(pid_t pid)
+{
+	int ret, rsd;
+	struct sockaddr_un addr_restore = make_restore_socket_address(pid);
+
+	rsd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (rsd < 0) {
+		fprintf(stderr, "%s() failed on socket setup.\n", __func__);
+		return rsd;
+	}
+
+	ret = bind(rsd, (struct sockaddr *)&addr_restore, sizeof(addr_restore));
+	if (ret < 0) {
+		fprintf(stderr, "%s() failed on socket bind.\n", __func__);
+		return ret;
+	}
+	ret = listen(rsd, 8);
+	if (ret < 0) {
+		fprintf(stderr, "%s() failed on socket listen.\n", __func__);
+		return ret;
+	}
+
+	return rsd;
+}
+
+static int setup_restore_socket_service(pid_t pid)
+{
+	int rd, ret;
+	struct sockaddr_un addr_restore = make_restore_socket_address(pid);
+
+	rd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (rd < 0) {
+		fprintf(stderr, "socket() %s failed: %m\n", addr_restore.sun_path + 1);
+		return rd;
+	}
+
+	ret = connect(rd, (struct sockaddr *)&addr_restore, sizeof(struct sockaddr_un));
+	if (ret < 0) {
+		fprintf(stderr, "connect() to %s failed: %m\n", addr_restore.sun_path + 1);
+		close(rd);
+		return ret;
+	}
+	return rd;
+}
+
+static int send_response_to_client(int fd, memcr_svc_response resp_code)
+{
+	struct service_response svc_resp = { .resp_code = resp_code };
+	int ret = xwrite(fd, &svc_resp, sizeof(svc_resp)); // send resp to client
+	if (ret != sizeof(svc_resp))
+	{
+		fprintf(stderr, "Error sending checkpoint response. Client may not exist!\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int send_response_to_service(int fd, int status)
+{
+	struct service_response svc_resp = { .resp_code = MEMCR_OK };
+
+	if (status)
+		svc_resp.resp_code = MEMCR_ERROR;
+
+	fprintf(stdout, "[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
+	int ret = xwrite(fd, &svc_resp, sizeof(svc_resp)); // send resp to service
+	if (ret != sizeof(svc_resp))
+		return -1;
+
+	return 0;
+}
+
+static int cmd_sequencer(pid_t pid, int checkp_resp_fd, int restore_fd, int *rd)
 {
 	int ret;
 	pid_t tpid;
 	struct vm_stats vms_a, vms_b;
 	struct timespec ts;
+	struct service_command post_checkpoint_cmd;
 
 	ret = target_cmd_get_tid(pid, &tpid);
 	if (ret == -1) {
@@ -981,7 +1065,7 @@ static int cmd_sequencer(pid_t pid)
 	ret = get_target_pages(pid, vmas, nr_vmas);
 	if (ret) {
 		fprintf(stderr, "get_target_pages() failed\n");
-		exit(1);
+		return 1;
 	}
 	fprintf(stdout, "[i] download took %lu ms\n", diff_ms(&ts));
 	fprintf(stdout, "[i] stored at %s/pages-%d.img\n", dump_dir, pid);
@@ -990,19 +1074,24 @@ static int cmd_sequencer(pid_t pid)
 
 	show_target_rss(&vms_a, &vms_b);
 
-	if (!nowait) {
-		long dms;
-		long h, m, s, ms;
+	send_response_to_service(checkp_resp_fd, ret);
 
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		fgetc(stdin);
-		dms = diff_ms(&ts);
-		h = dms/1000/60/60;
-		m = (dms/1000/60) % 60;
-		s = (dms/1000) % 60;
-		ms = dms % 1000;
-		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+	fprintf(stdout, "[%d] Waiting for restore command...\n", getpid());
+	*rd = accept(restore_fd, NULL, NULL);
+	if (*rd < 0) {
+		fprintf(stderr, "%s() failed on socket accept.\n", __func__);
+		close(restore_fd);
+		ret = *rd;
+	}
+
+	ret = xread(*rd, &post_checkpoint_cmd, sizeof(post_checkpoint_cmd));
+	if (ret != sizeof(post_checkpoint_cmd))
+		return -1;
+
+	if (MEMCR_RESTORE != post_checkpoint_cmd.cmd)
+	{
+		fprintf(stdout, "[%d] Unknown command %d received.\n", getpid(), post_checkpoint_cmd.cmd);
+		return -1;
 	}
 
 	fprintf(stdout, "[+] uploading pages\n");
@@ -1110,7 +1199,7 @@ retry:
 
 		assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
 		assert(!ptrace(PTRACE_CONT, tid, NULL,
-			       (void *)(unsigned long)si.si_signo));
+				   (void *)(unsigned long)si.si_signo));
 
 		/* wait for trap */
 		assert(wait4(tid, &status, __WALL, NULL) == tid);
@@ -1181,7 +1270,7 @@ static int setup_parasite_args(pid_t pid, void *base)
 	return 0;
 }
 
-static int execute_parasite(pid_t pid)
+static int execute_parasite(pid_t pid, int resp_fd)
 {
 	struct registers regs;
 	unsigned long *pc, *sp, *saved_code, saved_stack[16];
@@ -1189,6 +1278,7 @@ static int execute_parasite(pid_t pid)
 	pid_t parasite;
 	int i, count, status;
 	struct vm_skip_addr paddr;
+	int rsd, rd;
 
 	read_cpu_regs(pid, &regs);
 
@@ -1198,11 +1288,11 @@ static int execute_parasite(pid_t pid)
 
 	/* allocate space to save original code */
 	count = DIV_ROUND_UP(MAX(test_blob_size,
-			     MAX(sigprocmask_blob_size,
-			     MAX(mmap_blob_size,
-			     MAX(clone_blob_size,
+				 MAX(sigprocmask_blob_size,
+				 MAX(mmap_blob_size,
+				 MAX(clone_blob_size,
 				 munmap_blob_size)))),
-			     sizeof(unsigned long));
+				 sizeof(unsigned long));
 
 	saved_code = malloc(sizeof(unsigned long) * count);
 	assert(saved_code);
@@ -1309,7 +1399,9 @@ static int execute_parasite(pid_t pid)
 	printf("[+] executing parasite\n");
 	assert(!ptrace(PTRACE_CONT, parasite, NULL, NULL));
 
-	cmd_sequencer(pid);
+	rsd = setup_restore_socket_worker(pid);
+
+	cmd_sequencer(pid, resp_fd, rsd, &rd);
 
 	/* wait for termination */
 	assert(wait4(parasite, &status, __WALL, NULL) == parasite);
@@ -1353,6 +1445,9 @@ static int execute_parasite(pid_t pid)
 
 	free(saved_code);
 
+	send_response_to_service(rd, ret);
+	close(rsd);
+	close(rd);
 	return 0;
 }
 
@@ -1369,16 +1464,155 @@ static void signal_handler(int signal)
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s [-p pid] [-n]\n" \
+		"%s [-d path] [-S path]\n" \
 		"options: \n" \
 		"  -h --help\thelp\n" \
-		"  -p --pid\ttarget processs pid\n" \
 		"  -d --dir\tdir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
-		"        (abstract socket will be used if no path specified)\n" \
-		"  -n --nowait\tno wait for key press\n",
+		"        (abstract socket will be used if no path specified)\n",
 		name);
 	exit(status);
+}
+static int worker_checkpoint_procedure(pid_t pid, int checkpoint_resp_socket)
+{
+	int ret = seize_target(pid);
+	if (ret)
+		return ret;
+
+	ret = execute_parasite(pid, checkpoint_resp_socket);
+	if (ret)
+		return ret;
+
+	ret = unseize_target();
+	return ret;
+}
+
+static void parent_checkpoint_procedure(int checkpointSocket, int cd)
+{
+	int ret;
+	struct service_response svc_resp;
+
+	fprintf(stdout, "[+] Parent waiting for worker checkpoint...\n");
+	ret = xread(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
+	close(checkpointSocket);
+
+	if (ret == sizeof(svc_resp))
+	{
+		fprintf(stdout, "[+] Parent received checkpoint response, informing client...\n");
+		send_response_to_client(cd, svc_resp.resp_code);
+	}
+	else
+	{
+		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
+		send_response_to_client(cd, MEMCR_ERROR);
+	}
+}
+
+static void parent_restore_procedure(int cd, struct service_command svc_cmd)
+{
+	int rd, ret = 0;
+	struct service_response svc_resp;
+
+	rd = setup_restore_socket_service(svc_cmd.pid);
+	if (rd < 0)
+	{
+		fprintf(stderr, "[!] Error in setup restore connection to worker!\n");
+		ret = -1;
+	}
+
+	ret = xwrite(rd, &svc_cmd, sizeof(svc_cmd)); // send restore to child
+	if (ret != sizeof(svc_cmd)) {
+		fprintf(stderr, "%s() xwrite() svc_cmd failed: ret %d\n", __func__, ret);
+		ret = -1;
+	}
+
+	fprintf(stdout, "[+] Parent waiting for worker to restore... \n");
+
+	ret = xread(rd, &svc_resp, sizeof(svc_resp));   // read response from child
+	close(rd);
+	if (ret != sizeof(svc_resp)) {
+		fprintf(stderr, "%s() xread() svc_resp failed: ret %d\n", __func__, ret);
+		ret = -1;
+	}
+
+	if (-1 == ret || MEMCR_OK != svc_resp.resp_code)
+	{
+		fprintf(stderr, "[!] There were errors during restore procedure, sending ERROR response to client!\n");
+		send_response_to_client(cd, MEMCR_ERROR);
+	}
+	else
+	{
+		fprintf(stdout, "[i] Restore procedure finished. Sending OK response to client.\n");
+		send_response_to_client(cd, MEMCR_OK);
+	}
+}
+
+static int handle_connection(int cd)
+{
+	int ret;
+	struct service_command svc_cmd;
+
+	ret = xread(cd, &svc_cmd, sizeof(svc_cmd));
+	if (ret != sizeof(svc_cmd)) {
+		fprintf(stderr, "%s() read command: ret %d, errno %m\n", __func__, ret);
+		return -1;
+	}
+
+	switch (svc_cmd.cmd) {
+		case MEMCR_CHECKPOINT: {
+			fprintf(stdout, "[+] got MEMCR_CHECKPOINT for %d.\n", svc_cmd.pid);
+
+			int checkpoint_resp_sockets[2];
+
+			ret = socketpair(AF_UNIX, SOCK_STREAM, 0, checkpoint_resp_sockets);
+			if (ret < 0)
+			{
+				fprintf(stderr, "Error in socketpair creation!\n");
+				return ret;
+			}
+
+			pid_t forkpid = fork();
+			if (0 == forkpid) // child
+			{
+				close(cd);
+				close(checkpoint_resp_sockets[0]);
+
+				ret = worker_checkpoint_procedure(svc_cmd.pid, checkpoint_resp_sockets[1]);
+
+				exit(ret);
+			}
+			else if (forkpid > 0) // parent
+			{
+				close(checkpoint_resp_sockets[1]);
+
+				parent_checkpoint_procedure(checkpoint_resp_sockets[0], cd);
+			}
+			else
+			{
+				fprintf(stderr, "What the fork!\n");
+			}
+
+			break;
+		}
+		case MEMCR_RESTORE: {
+			fprintf(stdout, "[+] got MEMCR_RESTORE for %d.\n", svc_cmd.pid);
+
+			parent_restore_procedure(cd, svc_cmd);
+
+			break;
+		}
+		case MEMCR_EXIT: {
+			fprintf(stdout, "[+] Good bye!\n");
+			send_response_to_client(cd, MEMCR_OK);
+			finish = 1;
+			break;
+		}
+		default:
+			fprintf(stderr, "%s() unexpected command %d\n", __func__, svc_cmd.cmd);
+			break;
+	}
+
+	return ret;
 }
 
 int main(int argc, char *argv[])
@@ -1386,25 +1620,23 @@ int main(int argc, char *argv[])
 	int ret;
 	int opt;
 	int option_index;
+	int srvd;
+	struct sockaddr_un addr;
+
 	static struct option long_options[] = {
 		{ "help",			0,	0,	0},
-		{ "pid",			1,	0,	0},
 		{ "dir",			1,	0,	0},
 		{ "parasite-socket-dir",	1,	0,	0},
-		{ "nowait",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
 
 	dump_dir = "/tmp";
 	socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hvp:d:S:n", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hv:d:S:", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
-				break;
-			case 'p':
-				pid = atoi(optarg);
 				break;
 			case 'd':
 				dump_dir = optarg;
@@ -1412,30 +1644,51 @@ int main(int argc, char *argv[])
 			case 'S':
 				socket_dir = optarg;
 				break;
-			case 'n':
-				nowait = 1;
-				break;
 			default: /* '?' */
 				usage(argv[0], 1);
 		}
 	}
 
-	if (!pid) {
-		usage(argv[0], 1);
-	}
-
 	signal(SIGINT, signal_handler);
 
-	ret = seize_target(pid);
-	if (ret)
+	fprintf(stdout, "Starting memcr service. Dumps will be stored in: %s\n", dump_dir);
+
+	srvd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (srvd < 0) {
+		return -1;
+	}
+
+	addr.sun_family = PF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/memcrservice");
+
+	remove("/tmp/memcrservice");
+	ret = bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
+	if (ret) {
 		return ret;
-
-	execute_parasite(pid);
-
-	ret = unseize_target();
-	if (ret)
+	}
+	ret = listen(srvd, 8);
+	if (ret < 0) {
 		return ret;
+	}
 
+	int flags = fcntl(srvd, F_GETFL, 0);
+	fcntl(srvd, F_SETFL, flags | O_NONBLOCK);
+
+	fprintf(stdout, "[+] Listening on a socket for requests...\n");
+	while (!finish) {
+		ret = accept(srvd, NULL, NULL);
+		if (ret < 0) {
+			usleep(1000);
+			//fprintf(stdout, "[+] sleeping...\n");
+		} else {
+			fprintf(stdout, "[+] Handling request...\n");
+			handle_connection(ret);
+			close(ret);
+			fprintf(stdout, "[+] Request handled...\n");
+		}
+	}
+
+	close(srvd);
 	return interrupted ? 1 : 0;
 }
 
