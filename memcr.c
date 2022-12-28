@@ -78,10 +78,10 @@ struct vm_area {
 	unsigned long flags;
 };
 
-static int pid;
 static char *dump_dir;
 static char *socket_dir;
 static int nowait;
+static int finish = 0;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
@@ -97,6 +97,7 @@ static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
 static pid_t parasite_pid;
+static struct target_context ctx;
 
 static int interrupted;
 
@@ -938,7 +939,35 @@ static long diff_ms(struct timespec *ts)
 	return (tsn.tv_sec*1000 + tsn.tv_nsec/1000000) - (ts->tv_sec*1000 + ts->tv_nsec/1000000);
 }
 
-static int cmd_sequencer(pid_t pid)
+static int send_response_to_client(int fd, memcr_svc_response resp_code)
+{
+	struct service_response svc_resp = { .resp_code = resp_code };
+	int ret = xwrite(fd, &svc_resp, sizeof(svc_resp)); // send resp to client
+	if (ret != sizeof(svc_resp))
+	{
+		fprintf(stderr, "Error sending checkpoint response. Client may not exist!\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int send_response_to_service(int fd, int status)
+{
+	struct service_response svc_resp = { .resp_code = MEMCR_OK };
+
+	if (status)
+		svc_resp.resp_code = MEMCR_ERROR;
+
+	fprintf(stdout, "[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
+	int ret = xwrite(fd, &svc_resp, sizeof(svc_resp)); // send resp to service
+	if (ret != sizeof(svc_resp))
+		return -1;
+
+	return 0;
+}
+
+static int cmd_checkpoint(pid_t pid)
 {
 	int ret;
 	pid_t tpid;
@@ -990,20 +1019,12 @@ static int cmd_sequencer(pid_t pid)
 
 	show_target_rss(&vms_a, &vms_b);
 
-	if (!nowait) {
-		long dms;
-		long h, m, s, ms;
+	return 0;
+}
 
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		fgetc(stdin);
-		dms = diff_ms(&ts);
-		h = dms/1000/60/60;
-		m = (dms/1000/60) % 60;
-		s = (dms/1000) % 60;
-		ms = dms % 1000;
-		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
-	}
+static int cmd_restore(pid_t pid)
+{
+	struct timespec ts;
 
 	fprintf(stdout, "[+] uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1110,7 +1131,7 @@ retry:
 
 		assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
 		assert(!ptrace(PTRACE_CONT, tid, NULL,
-			       (void *)(unsigned long)si.si_signo));
+				   (void *)(unsigned long)si.si_signo));
 
 		/* wait for trap */
 		assert(wait4(tid, &status, __WALL, NULL) == tid);
@@ -1181,13 +1202,12 @@ static int setup_parasite_args(pid_t pid, void *base)
 	return 0;
 }
 
-static int execute_parasite(pid_t pid)
+static int execute_parasite_checkpoint(pid_t pid)
 {
 	struct registers regs;
-	unsigned long *pc, *sp, *saved_code, saved_stack[16];
-	unsigned long arg0, arg1, saved_sigmask, ret, *src, *dst;
+	unsigned long arg0, ret;
 	pid_t parasite;
-	int i, count, status;
+	int i, status;
 	struct vm_skip_addr paddr;
 
 	read_cpu_regs(pid, &regs);
@@ -1197,26 +1217,26 @@ static int execute_parasite(pid_t pid)
 #endif
 
 	/* allocate space to save original code */
-	count = DIV_ROUND_UP(MAX(test_blob_size,
-			     MAX(sigprocmask_blob_size,
-			     MAX(mmap_blob_size,
-			     MAX(clone_blob_size,
+	ctx.count = DIV_ROUND_UP(MAX(test_blob_size,
+				 MAX(sigprocmask_blob_size,
+				 MAX(mmap_blob_size,
+				 MAX(clone_blob_size,
 				 munmap_blob_size)))),
-			     sizeof(unsigned long));
+				 sizeof(unsigned long));
 
-	saved_code = malloc(sizeof(unsigned long) * count);
-	assert(saved_code);
+	ctx.saved_code = malloc(sizeof(unsigned long) * ctx.count);
+	assert(ctx.saved_code);
 
 	/*
 	 * The page %rip is on gotta be executable.  If we inject from the
 	 * beginning of the page, there should be at least one page of
 	 * space.  Determine the position and save the original code.
 	 */
-	pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-	for (i = 0; i < count; i++) {
-		saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, pc + i, NULL);
+	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
+	for (i = 0; i < ctx.count; i++) {
+		ctx.saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.pc + i, NULL);
 #if 0
-		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), saved_code[i]);
+		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), ctx.saved_code[i]);
 #endif
 	}
 
@@ -1225,11 +1245,11 @@ static int execute_parasite(pid_t pid)
 	 * as writeable scratch area.  This wouldn't be necessary if mmap
 	 * is done earlier.
 	 */
-	sp = get_cpu_regs_sp(&regs) - sizeof(saved_stack);
-	for (i = 0; i < sizeof(saved_stack) / sizeof(saved_stack[0]); i++) {
-		saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, sp + i, NULL);
+	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.saved_stack);
+	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++) {
+		ctx.saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.sp + i, NULL);
 #if 0
-		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), saved_stack[i]);
+		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), ctx.saved_stack[i]);
 #endif
 	}
 
@@ -1249,14 +1269,14 @@ static int execute_parasite(pid_t pid)
 	 */
 	printf("[+] blocking all signals\n");
 	for (i = 0; i < 8 / sizeof(unsigned long); i++) {
-		assert(!ptrace(PTRACE_POKEDATA, pid, sp-i, (void *)-1LU));
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp-i, (void *)-1LU));
 	}
-	arg0 = (unsigned long)sp;
-	ret = execute_blob(pid, pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	arg0 = (unsigned long)ctx.sp;
+	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
 #endif
-	saved_sigmask = arg0;
+	ctx.saved_sigmask = arg0;
 	assert(!ret);
 
 	/* mmap space for parasite */
@@ -1264,22 +1284,22 @@ static int execute_parasite(pid_t pid)
 	printf("executing mmap blob\n");
 #endif
 	arg0 = sizeof(parasite_blob);
-	ret = execute_blob(pid, pc, mmap_blob, mmap_blob_size, &arg0, NULL);
+	ret = execute_blob(pid, ctx.pc, mmap_blob, mmap_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx\n", ret);
 #endif
 	assert(ret < -4096LU);
 
 	/* copy parasite_blob into the mmapped area */
-	dst = (void *)ret;
-	src = (void *)parasite_blob;
+	ctx.dst = (void *)ret;
+	ctx.src = (void *)parasite_blob;
 	for (i = 0; i < DIV_ROUND_UP(sizeof(parasite_blob), sizeof(unsigned long)); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, dst + i, src[i]));
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.dst + i, ctx.src[i]));
 
-	setup_parasite_args(pid, dst);
+	setup_parasite_args(pid, ctx.dst);
 
 	/* skip parasite vma */
-	paddr.addr = dst;
+	paddr.addr = ctx.dst;
 	paddr.desc = 's';
 	set_skip_addr(paddr);
 
@@ -1287,8 +1307,8 @@ static int execute_parasite(pid_t pid)
 #if 0
 	printf("executing clone blob\n");
 #endif
-	arg0 = (unsigned long)dst;
-	parasite = execute_blob(pid, pc, clone_blob, clone_blob_size, &arg0, NULL);
+	arg0 = (unsigned long)ctx.dst;
+	parasite = execute_blob(pid, ctx.pc, clone_blob, clone_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %d\n", parasite);
 #endif
@@ -1309,7 +1329,18 @@ static int execute_parasite(pid_t pid)
 	printf("[+] executing parasite\n");
 	assert(!ptrace(PTRACE_CONT, parasite, NULL, NULL));
 
-	cmd_sequencer(pid);
+	cmd_checkpoint(pid);
+
+	return 0;
+}
+
+static int execute_parasite_restore(pid_t pid)
+{
+	unsigned long arg0, arg1, ret;
+	pid_t parasite = parasite_pid;
+	int i, status;
+
+	cmd_restore(pid);
 
 	/* wait for termination */
 	assert(wait4(parasite, &status, __WALL, NULL) == parasite);
@@ -1326,9 +1357,9 @@ static int execute_parasite(pid_t pid)
 #if 0
 	printf("executing munmap blob\n");
 #endif
-	arg0 = (unsigned long)dst;
+	arg0 = (unsigned long)ctx.dst;
 	arg1 = sizeof(parasite_blob);
-	ret = execute_blob(pid, pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
+	ret = execute_blob(pid, ctx.pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
 	if (ret) {
 		fprintf(stderr, "[-] munmap_blob failed: %ld\n", ret);
 		assert(!ret);
@@ -1336,22 +1367,22 @@ static int execute_parasite(pid_t pid)
 
 	/* restore the original sigmask */
 	printf("[+] unblocking signals\n");
-	assert(!ptrace(PTRACE_POKEDATA, pid, sp, (void *)saved_sigmask));
-	arg0 = (unsigned long)sp;
-	ret = execute_blob(pid, pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp, (void *)ctx.saved_sigmask));
+	arg0 = (unsigned long)ctx.sp;
+	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
 #endif
 	assert(!ret);
 
 	/* restore the original code and stack area */
-	for (i = 0; i < count; i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, pc + i, (void *)saved_code[i]));
+	for (i = 0; i < ctx.count; i++)
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.pc + i, (void *)ctx.saved_code[i]));
 
-	for (i = 0; i < sizeof(saved_stack) / sizeof(saved_stack[0]); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, sp + i, (void *)saved_stack[i]));
+	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++)
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp + i, (void *)ctx.saved_stack[i]));
 
-	free(saved_code);
+	free(ctx.saved_code);
 
 	return 0;
 }
@@ -1372,7 +1403,6 @@ static void usage(const char *name, int status)
 		"%s [-p pid] [-n]\n" \
 		"options: \n" \
 		"  -h --help\thelp\n" \
-		"  -p --pid\ttarget processs pid\n" \
 		"  -d --dir\tdir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
@@ -1381,14 +1411,288 @@ static void usage(const char *name, int status)
 	exit(status);
 }
 
+static struct sockaddr_un make_restore_socket_address(pid_t pid)
+{
+	struct sockaddr_un addr_restore;
+	addr_restore.sun_family = PF_UNIX;
+	memset(addr_restore.sun_path, 0, sizeof(addr_restore.sun_path));
+	snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
+	addr_restore.sun_path[0] = '\0';
+
+	return addr_restore;
+}
+
+static int setup_restore_socket_worker(pid_t pid)
+{
+	int ret, rsd;
+	struct sockaddr_un addr_restore = make_restore_socket_address(pid);
+
+	rsd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (rsd < 0) {
+		fprintf(stderr, "%s() failed on socket setup.\n", __func__);
+		return rsd;
+	}
+
+	ret = bind(rsd, (struct sockaddr *)&addr_restore, sizeof(addr_restore));
+	if (ret < 0) {
+		fprintf(stderr, "%s() failed on socket bind.\n", __func__);
+		return ret;
+	}
+	ret = listen(rsd, 8);
+	if (ret < 0) {
+		fprintf(stderr, "%s() failed on socket listen.\n", __func__);
+		return ret;
+	}
+
+	return rsd;
+}
+
+static int setup_restore_socket_service(pid_t pid)
+{
+	int rd, ret;
+	struct sockaddr_un addr_restore = make_restore_socket_address(pid);
+
+	rd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (rd < 0) {
+		fprintf(stderr, "socket() %s failed: %m\n", addr_restore.sun_path + 1);
+		return rd;
+	}
+
+	ret = connect(rd, (struct sockaddr *)&addr_restore, sizeof(struct sockaddr_un));
+	if (ret < 0) {
+		fprintf(stderr, "connect() to %s failed: %m\n", addr_restore.sun_path + 1);
+		close(rd);
+		return ret;
+	}
+	return rd;
+}
+
+static int checkpoint_worker(pid_t pid, int checkpointSocket)
+{
+	int ret = seize_target(pid);
+	if (ret)
+	{
+		fprintf(stderr, "[%d] Seizing target failed!\n", getpid());
+		return ret;
+	}
+
+	ret = execute_parasite_checkpoint(pid);
+	if(ret)
+	{
+		fprintf(stderr, "[%d] Parasite checkpoint failed!\n", getpid());
+		return ret;
+	}
+
+	return 0;
+}
+
+static int restore_worker(int rd)
+{
+	int ret;
+	struct service_command post_checkpoint_cmd;
+
+	ret = xread(rd, &post_checkpoint_cmd, sizeof(post_checkpoint_cmd));
+	if (ret != sizeof(post_checkpoint_cmd))
+		return -1;
+
+	if (MEMCR_RESTORE != post_checkpoint_cmd.cmd)
+	{
+		fprintf(stdout, "[%d] Unknown command %d received.\n", getpid(), post_checkpoint_cmd.cmd);
+		return -1;
+	}
+
+	fprintf(stdout, "[%d] Worker received RESTORE command for %d.\n", getpid(), post_checkpoint_cmd.pid);
+
+	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
+	if (ret)
+		return ret;
+
+	ret = unseize_target();
+	return ret;
+}
+
+static int application_worker(pid_t pid, int checkpoint_resp_socket)
+{
+	int rsd, rd, ret = 0;
+
+	fprintf(stdout, "[%d] memcr worker is started to checkpoint %d.\n", getpid(), pid);
+
+	rsd = setup_restore_socket_worker(pid);
+	if (rsd < 0)
+		ret |= rsd;
+
+	if (0 == ret)
+	{
+		ret |= checkpoint_worker(pid, checkpoint_resp_socket);
+	}
+	ret |= send_response_to_service(checkpoint_resp_socket, ret); // send resp to service
+	close(checkpoint_resp_socket);
+
+	if (ret)
+	{
+		fprintf(stderr, "[%d] Process %d checkpoint failed! Aborting procedure.\n", getpid(), pid);
+		close(rsd);
+		return ret;
+	}
+
+	fprintf(stdout, "[%d] Waiting for restore command...\n", getpid());
+	rd = accept(rsd, NULL, NULL);
+	if (rd < 0) {
+		fprintf(stderr, "%s() failed on socket accept.\n", __func__);
+		close(rsd);
+		ret |= rd;
+	}
+
+	if (0 == ret)
+	{
+		ret |= restore_worker(rd);
+	}
+	ret |= send_response_to_service(rd, ret);
+
+	close(rsd);
+	close(rd);
+	fprintf(stdout, "[%d] Worker ends.\n", getpid());
+
+	return ret;
+}
+
+static void parent_checkpoint_procedure(int checkpointSocket, int cd)
+{
+	int ret;
+	struct service_response svc_resp;
+
+	fprintf(stdout, "[+] Parent waiting for worker checkpoint...\n");
+	ret = xread(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
+	close(checkpointSocket);
+
+	if (ret == sizeof(svc_resp))
+	{
+		fprintf(stdout, "[+] Parent received checkpoint response, informing client...\n");
+		send_response_to_client(cd, svc_resp.resp_code);
+	}
+	else
+	{
+		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
+		send_response_to_client(cd, MEMCR_ERROR);
+	}
+}
+
+static void parent_restore_procedure(int cd, struct service_command svc_cmd)
+{
+	int rd, ret = 0;
+	struct service_response svc_resp;
+
+	rd = setup_restore_socket_service(svc_cmd.pid);
+	if (rd < 0)
+	{
+		fprintf(stderr, "[!] Error in setup restore connection to worker!\n");
+		ret = -1;
+	}
+
+	ret = xwrite(rd, &svc_cmd, sizeof(svc_cmd)); // send restore to child
+	if (ret != sizeof(svc_cmd)) {
+		fprintf(stderr, "%s() xwrite() svc_cmd failed: ret %d\n", __func__, ret);
+		ret = -1;
+	}
+
+	fprintf(stdout, "[+] Parent waiting for worker to restore... \n");
+
+	ret = xread(rd, &svc_resp, sizeof(svc_resp));   // read response from child
+	close(rd);
+	if (ret != sizeof(svc_resp)) {
+		fprintf(stderr, "%s() xread() svc_resp failed: ret %d\n", __func__, ret);
+		ret = -1;
+	}
+
+	if (-1 == ret || MEMCR_OK != svc_resp.resp_code)
+	{
+		fprintf(stderr, "[!] There were errors during restore procedure, sending ERROR response to client!\n");
+		send_response_to_client(cd, MEMCR_ERROR);
+	}
+	else
+	{
+		fprintf(stdout, "[i] Restore procedure finished. Sending OK response to client.\n");
+		send_response_to_client(cd, MEMCR_OK);
+	}
+}
+
+static int handle_connection(int cd)
+{
+	int ret;
+	struct service_command svc_cmd;
+
+	ret = xread(cd, &svc_cmd, sizeof(svc_cmd));
+	if (ret != sizeof(svc_cmd)) {
+		fprintf(stderr, "%s() read command: ret %d, errno %m\n", __func__, ret);
+		return -1;
+	}
+
+	switch (svc_cmd.cmd) {
+		case MEMCR_CHECKPOINT: {
+			fprintf(stdout, "[+] got MEMCR_CHECKPOINT for %d.\n", svc_cmd.pid);
+
+			int checkpoint_resp_sockets[2];
+
+			ret = socketpair(AF_UNIX, SOCK_STREAM, 0, checkpoint_resp_sockets);
+			if (ret < 0)
+			{
+				fprintf(stderr, "Error in socketpair creation!\n");
+				return ret;
+			}
+
+			pid_t forkpid = fork();
+			if (0 == forkpid) // child
+			{
+				close(cd);
+				close(checkpoint_resp_sockets[0]);
+
+				ret = application_worker(svc_cmd.pid, checkpoint_resp_sockets[1]);
+				exit(ret);
+			}
+			else if (forkpid > 0) // parent
+			{
+				close(checkpoint_resp_sockets[1]);
+
+				parent_checkpoint_procedure(checkpoint_resp_sockets[0], cd);
+			}
+			else
+			{
+				fprintf(stderr, "What the fork!\n");
+			}
+
+			break;
+		}
+		case MEMCR_RESTORE: {
+			fprintf(stdout, "[+] got MEMCR_RESTORE for %d.\n", svc_cmd.pid);
+
+			parent_restore_procedure(cd, svc_cmd);
+
+			break;
+		}
+		case MEMCR_EXIT: {
+			fprintf(stdout, "[+] Good bye!\n");
+			send_response_to_client(cd, MEMCR_OK);
+			finish = 1;
+			break;
+		}
+		default:
+			fprintf(stderr, "%s() unexpected command %d\n", __func__, svc_cmd.cmd);
+			break;
+	}
+
+	return ret;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
 	int opt;
 	int option_index;
+	int srvd;
+	struct sockaddr_un addr;
+
 	static struct option long_options[] = {
 		{ "help",			0,	0,	0},
-		{ "pid",			1,	0,	0},
 		{ "dir",			1,	0,	0},
 		{ "parasite-socket-dir",	1,	0,	0},
 		{ "nowait",			0,	0,	0},
@@ -1402,9 +1706,6 @@ int main(int argc, char *argv[])
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
-				break;
-			case 'p':
-				pid = atoi(optarg);
 				break;
 			case 'd':
 				dump_dir = optarg;
@@ -1420,21 +1721,46 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!pid) {
-		usage(argv[0], 1);
-	}
-
 	signal(SIGINT, signal_handler);
 
-	ret = seize_target(pid);
-	if (ret)
-		return ret;
+	fprintf(stdout, "Starting memcr service. Dumps will be stored in: %s\n", dump_dir);
 
-	execute_parasite(pid);
+	srvd = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (srvd < 0) {
+		return -1;
+	}
 
-	ret = unseize_target();
-	if (ret)
+	addr.sun_family = PF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/memcrservice");
+
+	remove("/tmp/memcrservice");
+	ret = bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
+	if (ret) {
 		return ret;
+	}
+	ret = listen(srvd, 8);
+	if (ret < 0) {
+		return ret;
+	}
+
+	int flags = fcntl(srvd, F_GETFL, 0);
+	fcntl(srvd, F_SETFL, flags | O_NONBLOCK);
+
+	fprintf(stdout, "[+] Listening on a socket for requests...\n");
+	while (!finish) {
+		ret = accept(srvd, NULL, NULL);
+		if (ret < 0) {
+			usleep(1000);
+			//fprintf(stdout, "[+] sleeping...\n");
+		} else {
+			fprintf(stdout, "[+] Handling request...\n");
+			handle_connection(ret);
+			close(ret);
+			fprintf(stdout, "[+] Request handled...\n");
+		}
+	}
+
+	close(srvd);
 
 	return interrupted ? 1 : 0;
 }
