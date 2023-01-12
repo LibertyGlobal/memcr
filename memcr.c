@@ -939,7 +939,7 @@ static long diff_ms(struct timespec *ts)
 	return (tsn.tv_sec*1000 + tsn.tv_nsec/1000000) - (ts->tv_sec*1000 + ts->tv_nsec/1000000);
 }
 
-static int cmd_sequencer(pid_t pid)
+static int cmd_checkpoint(pid_t pid)
 {
 	int ret;
 	pid_t tpid;
@@ -991,20 +991,12 @@ static int cmd_sequencer(pid_t pid)
 
 	show_target_rss(&vms_a, &vms_b);
 
-	if (!nowait) {
-		long dms;
-		long h, m, s, ms;
+	return 0;
+}
 
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		fgetc(stdin);
-		dms = diff_ms(&ts);
-		h = dms/1000/60/60;
-		m = (dms/1000/60) % 60;
-		s = (dms/1000) % 60;
-		ms = dms % 1000;
-		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
-	}
+static int cmd_restore(pid_t pid)
+{
+	struct timespec ts;
 
 	fprintf(stdout, "[+] uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1182,10 +1174,10 @@ static int setup_parasite_args(pid_t pid, void *base)
 	return 0;
 }
 
-static int execute_parasite(pid_t pid)
+static int execute_parasite_checkpoint(pid_t pid)
 {
 	struct registers regs;
-	unsigned long arg0, arg1, ret;
+	unsigned long arg0, ret;
 	pid_t parasite;
 	int i, status;
 	struct vm_skip_addr paddr;
@@ -1309,7 +1301,18 @@ static int execute_parasite(pid_t pid)
 	printf("[+] executing parasite\n");
 	assert(!ptrace(PTRACE_CONT, parasite, NULL, NULL));
 
-	cmd_sequencer(pid);
+	cmd_checkpoint(pid);
+
+	return 0;
+}
+
+static int execute_parasite_restore(pid_t pid)
+{
+	unsigned long arg0, arg1, ret;
+	pid_t parasite = parasite_pid;
+	int i, status;
+
+	cmd_restore(pid);
 
 	/* wait for termination */
 	assert(wait4(parasite, &status, __WALL, NULL) == parasite);
@@ -1430,7 +1433,23 @@ int main(int argc, char *argv[])
 	if (ret)
 		return ret;
 
-	execute_parasite(pid);
+	execute_parasite_checkpoint(pid);
+	if (!nowait) {
+		long dms;
+		long h, m, s, ms;
+		struct timespec ts;
+
+		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		fgetc(stdin);
+		dms = diff_ms(&ts);
+		h = dms/1000/60/60;
+		m = (dms/1000/60) % 60;
+		s = (dms/1000) % 60;
+		ms = dms % 1000;
+		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+	}
+	execute_parasite_restore(pid);
 
 	ret = unseize_target();
 	if (ret)
