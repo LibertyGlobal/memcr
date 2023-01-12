@@ -97,6 +97,7 @@ static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
 static pid_t parasite_pid;
+static struct target_context ctx;
 
 static int interrupted;
 
@@ -1184,10 +1185,9 @@ static int setup_parasite_args(pid_t pid, void *base)
 static int execute_parasite(pid_t pid)
 {
 	struct registers regs;
-	unsigned long *pc, *sp, *saved_code, saved_stack[16];
-	unsigned long arg0, arg1, saved_sigmask, ret, *src, *dst;
+	unsigned long arg0, arg1, ret;
 	pid_t parasite;
-	int i, count, status;
+	int i, status;
 	struct vm_skip_addr paddr;
 
 	read_cpu_regs(pid, &regs);
@@ -1197,26 +1197,26 @@ static int execute_parasite(pid_t pid)
 #endif
 
 	/* allocate space to save original code */
-	count = DIV_ROUND_UP(MAX(test_blob_size,
-			     MAX(sigprocmask_blob_size,
-			     MAX(mmap_blob_size,
-			     MAX(clone_blob_size,
+	ctx.count = DIV_ROUND_UP(MAX(test_blob_size,
+				 MAX(sigprocmask_blob_size,
+				 MAX(mmap_blob_size,
+				 MAX(clone_blob_size,
 				 munmap_blob_size)))),
-			     sizeof(unsigned long));
+				 sizeof(unsigned long));
 
-	saved_code = malloc(sizeof(unsigned long) * count);
-	assert(saved_code);
+	ctx.saved_code = malloc(sizeof(unsigned long) * ctx.count);
+	assert(ctx.saved_code);
 
 	/*
 	 * The page %rip is on gotta be executable.  If we inject from the
 	 * beginning of the page, there should be at least one page of
 	 * space.  Determine the position and save the original code.
 	 */
-	pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-	for (i = 0; i < count; i++) {
-		saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, pc + i, NULL);
+	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
+	for (i = 0; i < ctx.count; i++) {
+		ctx.saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.pc + i, NULL);
 #if 0
-		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), saved_code[i]);
+		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), ctx.saved_code[i]);
 #endif
 	}
 
@@ -1225,11 +1225,11 @@ static int execute_parasite(pid_t pid)
 	 * as writeable scratch area.  This wouldn't be necessary if mmap
 	 * is done earlier.
 	 */
-	sp = get_cpu_regs_sp(&regs) - sizeof(saved_stack);
-	for (i = 0; i < sizeof(saved_stack) / sizeof(saved_stack[0]); i++) {
-		saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, sp + i, NULL);
+	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.saved_stack);
+	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++) {
+		ctx.saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.sp + i, NULL);
 #if 0
-		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), saved_stack[i]);
+		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), ctx.saved_stack[i]);
 #endif
 	}
 
@@ -1249,14 +1249,14 @@ static int execute_parasite(pid_t pid)
 	 */
 	printf("[+] blocking all signals\n");
 	for (i = 0; i < 8 / sizeof(unsigned long); i++) {
-		assert(!ptrace(PTRACE_POKEDATA, pid, sp-i, (void *)-1LU));
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp-i, (void *)-1LU));
 	}
-	arg0 = (unsigned long)sp;
-	ret = execute_blob(pid, pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	arg0 = (unsigned long)ctx.sp;
+	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
 #endif
-	saved_sigmask = arg0;
+	ctx.saved_sigmask = arg0;
 	assert(!ret);
 
 	/* mmap space for parasite */
@@ -1264,22 +1264,22 @@ static int execute_parasite(pid_t pid)
 	printf("executing mmap blob\n");
 #endif
 	arg0 = sizeof(parasite_blob);
-	ret = execute_blob(pid, pc, mmap_blob, mmap_blob_size, &arg0, NULL);
+	ret = execute_blob(pid, ctx.pc, mmap_blob, mmap_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx\n", ret);
 #endif
 	assert(ret < -4096LU);
 
 	/* copy parasite_blob into the mmapped area */
-	dst = (void *)ret;
-	src = (void *)parasite_blob;
+	ctx.dst = (void *)ret;
+	ctx.src = (void *)parasite_blob;
 	for (i = 0; i < DIV_ROUND_UP(sizeof(parasite_blob), sizeof(unsigned long)); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, dst + i, src[i]));
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.dst + i, ctx.src[i]));
 
-	setup_parasite_args(pid, dst);
+	setup_parasite_args(pid, ctx.dst);
 
 	/* skip parasite vma */
-	paddr.addr = dst;
+	paddr.addr = ctx.dst;
 	paddr.desc = 's';
 	set_skip_addr(paddr);
 
@@ -1287,8 +1287,8 @@ static int execute_parasite(pid_t pid)
 #if 0
 	printf("executing clone blob\n");
 #endif
-	arg0 = (unsigned long)dst;
-	parasite = execute_blob(pid, pc, clone_blob, clone_blob_size, &arg0, NULL);
+	arg0 = (unsigned long)ctx.dst;
+	parasite = execute_blob(pid, ctx.pc, clone_blob, clone_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %d\n", parasite);
 #endif
@@ -1326,9 +1326,9 @@ static int execute_parasite(pid_t pid)
 #if 0
 	printf("executing munmap blob\n");
 #endif
-	arg0 = (unsigned long)dst;
+	arg0 = (unsigned long)ctx.dst;
 	arg1 = sizeof(parasite_blob);
-	ret = execute_blob(pid, pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
+	ret = execute_blob(pid, ctx.pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
 	if (ret) {
 		fprintf(stderr, "[-] munmap_blob failed: %ld\n", ret);
 		assert(!ret);
@@ -1336,22 +1336,22 @@ static int execute_parasite(pid_t pid)
 
 	/* restore the original sigmask */
 	printf("[+] unblocking signals\n");
-	assert(!ptrace(PTRACE_POKEDATA, pid, sp, (void *)saved_sigmask));
-	arg0 = (unsigned long)sp;
-	ret = execute_blob(pid, pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp, (void *)ctx.saved_sigmask));
+	arg0 = (unsigned long)ctx.sp;
+	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
 #endif
 	assert(!ret);
 
 	/* restore the original code and stack area */
-	for (i = 0; i < count; i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, pc + i, (void *)saved_code[i]));
+	for (i = 0; i < ctx.count; i++)
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.pc + i, (void *)ctx.saved_code[i]));
 
-	for (i = 0; i < sizeof(saved_stack) / sizeof(saved_stack[0]); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, sp + i, (void *)saved_stack[i]));
+	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++)
+		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp + i, (void *)ctx.saved_stack[i]));
 
-	free(saved_code);
+	free(ctx.saved_code);
 
 	return 0;
 }

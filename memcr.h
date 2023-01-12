@@ -65,5 +65,16 @@ struct vm_page {
 #endif
 } __attribute__((packed));
 
+struct target_context {
+	unsigned long *pc;
+	unsigned long *sp;
+	unsigned long *src;
+	unsigned long *dst;
+	unsigned long *saved_code;
+	unsigned long saved_sigmask;
+	unsigned long saved_stack[16];
+	int count;
+} __attribute__((packed));
+
 #endif
 
