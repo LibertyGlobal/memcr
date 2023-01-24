@@ -42,6 +42,16 @@ typedef enum {
 	CMD_END,
 } memcr_cmd;
 
+typedef enum {
+	MEMCR_CHECKPOINT = 100,
+	MEMCR_RESTORE
+} memcr_svc_cmd;
+
+struct service_command {
+	memcr_svc_cmd cmd;
+	pid_t pid;
+} __attribute__((packed));
+
 struct vm_skip_addr {
 	void *addr;
 	char desc;

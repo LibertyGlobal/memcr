@@ -82,6 +82,7 @@ static int pid;
 static char *dump_dir;
 static char *socket_dir;
 static int nowait;
+static int listen_port;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
@@ -364,6 +365,32 @@ static int xwrite(int fd, void *buf, int size)
 	}
 
 	return ret;
+}
+
+static int setup_listen_socket(int port)
+{
+	int srvd, ret;
+	struct sockaddr_in addr;
+
+	srvd = socket(AF_INET, SOCK_STREAM, 0);
+	if (srvd < 0) {
+		return srvd;
+	}
+
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	addr.sin_port = htons(port);
+
+	ret = bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
+	if (ret) {
+		return ret;
+	}
+	ret = listen(srvd, 8);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return srvd;
 }
 
 static int target_cmd_get_tid(int pid, pid_t *tid)
@@ -1369,16 +1396,53 @@ static void signal_handler(int signal)
 	}
 }
 
+static int read_command(int csd, struct service_command * svc_cmd)
+{
+	int cd, ret;
+
+	cd = accept(csd, NULL, NULL);
+	if (cd < 0)
+		return cd;
+
+	ret = xread(cd, svc_cmd, sizeof(struct service_command));
+	if (ret != sizeof(struct service_command)) {
+		fprintf(stderr, "%s(): ret %d, errno %m\n", __func__, ret);
+		return -1;
+	}
+	close(cd);
+	fprintf(stdout, "Read command inside %d, pid %d, ret %d.\n", svc_cmd->cmd, svc_cmd->pid, ret);
+
+	return ret;
+}
+
+static void user_interactive_mode()
+{
+	long dms;
+	long h, m, s, ms;
+	struct timespec ts;
+
+	fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	fgetc(stdin);
+	dms = diff_ms(&ts);
+	h = dms/1000/60/60;
+	m = (dms/1000/60) % 60;
+	s = (dms/1000) % 60;
+	ms = dms % 1000;
+	fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+}
+
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s [-p pid] [-n]\n" \
+		"%s [-p PID] [-d DIR] [-S DIR] [-l PORT] [-n]\n" \
 		"options: \n" \
 		"  -h --help\thelp\n" \
 		"  -p --pid\ttarget processs pid\n" \
 		"  -d --dir\tdir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
+		"  -l --listen\tTCP port number to listen for requests\n" \
 		"  -n --nowait\tno wait for key press\n",
 		name);
 	exit(status);
@@ -1386,22 +1450,26 @@ static void usage(const char *name, int status)
 
 int main(int argc, char *argv[])
 {
-	int ret;
+	int csd, ret;
 	int opt;
 	int option_index;
+	struct service_command svc_cmd = {};
+
 	static struct option long_options[] = {
 		{ "help",			0,	0,	0},
 		{ "pid",			1,	0,	0},
 		{ "dir",			1,	0,	0},
 		{ "parasite-socket-dir",	1,	0,	0},
+		{ "listen",			1,	0,	0},
 		{ "nowait",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
 
 	dump_dir = "/tmp";
 	socket_dir = NULL;
+	listen_port = -1;
 
-	while ((opt = getopt_long(argc, argv, "hvp:d:S:n", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:n", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -1415,6 +1483,9 @@ int main(int argc, char *argv[])
 			case 'S':
 				socket_dir = optarg;
 				break;
+			case 'l':
+				listen_port = atoi(optarg);
+				break;
 			case 'n':
 				nowait = 1;
 				break;
@@ -1423,33 +1494,49 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!pid) {
+	if (!pid && !listen_port) {
 		usage(argv[0], 1);
 	}
 
 	signal(SIGINT, signal_handler);
+
+	if (listen_port > 0) {
+		csd = setup_listen_socket(listen_port);
+		if (csd < 0)
+			return -1;
+
+		fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
+
+		ret = read_command(csd, &svc_cmd);
+
+		fprintf(stdout, "Read command %d, pid %d, ret %d.\n", svc_cmd.cmd, svc_cmd.pid, ret);
+
+		if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
+			fprintf(stderr, "%s(): Wrong command received on checkpoint phase!\n", __func__);
+			return -1;
+		}
+
+		pid = svc_cmd.pid;
+	}
 
 	ret = seize_target(pid);
 	if (ret)
 		return ret;
 
 	execute_parasite_checkpoint(pid);
-	if (!nowait) {
-		long dms;
-		long h, m, s, ms;
-		struct timespec ts;
-
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
-		clock_gettime(CLOCK_MONOTONIC, &ts);
-		fgetc(stdin);
-		dms = diff_ms(&ts);
-		h = dms/1000/60/60;
-		m = (dms/1000/60) % 60;
-		s = (dms/1000) % 60;
-		ms = dms % 1000;
-		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+	if (listen_port > 0) {
+		ret = read_command(csd, &svc_cmd);
+		if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
+			fprintf(stderr, "%s(): Wrong command received on restore phase!\n", __func__);
+			return -1;
+		}
+	} else if (!nowait) {
+		user_interactive_mode();
 	}
 	execute_parasite_restore(pid);
+
+	if (csd)
+		close(csd);
 
 	ret = unseize_target();
 	if (ret)
