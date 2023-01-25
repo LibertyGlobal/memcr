@@ -262,6 +262,7 @@ static int unseize_target(void)
 
 	for (i = 0; i < nr_threads; i++)
 		ret |= unseize_pid(tids[i]);
+	nr_threads = 0;
 
 	return ret;
 }
@@ -1449,26 +1450,29 @@ static int service_mode(int listen)
 
 	fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
 
-	ret = read_command(csd, &svc_cmd);
+	while (!interrupted) {
+		ret = read_command(csd, &svc_cmd);
 
-	if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
-		fprintf(stderr, "%s(): Wrong command received (cmd: %d) on checkpoint phase!\n", __func__, svc_cmd.cmd);
-		return -1;
+		if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
+			fprintf(stderr, "%s(): Wrong command received (cmd: %d) on checkpoint phase!\n", __func__, svc_cmd.cmd);
+			continue;
+		}
+
+		pid = svc_cmd.pid;
+
+		ret = checkpoint_worker(pid);
+		if (ret)
+			return ret;
+
+read_restore:
+		ret = read_command(csd, &svc_cmd);
+		if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
+			fprintf(stderr, "%s(): Wrong command received (cmd: %d, pid: %d) on restore phase!\n", __func__, svc_cmd.cmd, svc_cmd.pid);
+			goto read_restore;
+		}
+
+		ret = restore_worker(pid);
 	}
-
-	pid = svc_cmd.pid;
-
-	ret = checkpoint_worker(pid);
-	if (ret)
-		return ret;
-
-	ret = read_command(csd, &svc_cmd);
-	if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
-		fprintf(stderr, "%s(): Wrong command received (cmd: %d, pid: %d) on restore phase!\n", __func__, svc_cmd.cmd, svc_cmd.pid);
-		return -1;
-	}
-
-	ret = restore_worker(pid);
 
 	close(csd);
 	return ret;
