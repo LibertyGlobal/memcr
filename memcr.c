@@ -1410,26 +1410,95 @@ static int read_command(int csd, struct service_command * svc_cmd)
 		return -1;
 	}
 	close(cd);
-	fprintf(stdout, "Read command inside %d, pid %d, ret %d.\n", svc_cmd->cmd, svc_cmd->pid, ret);
 
 	return ret;
 }
 
-static void user_interactive_mode()
+static int checkpoint_worker(pid_t pid)
 {
-	long dms;
-	long h, m, s, ms;
-	struct timespec ts;
+	int ret;
 
-	fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	fgetc(stdin);
-	dms = diff_ms(&ts);
-	h = dms/1000/60/60;
-	m = (dms/1000/60) % 60;
-	s = (dms/1000) % 60;
-	ms = dms % 1000;
-	fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+	ret = seize_target(pid);
+	if (ret)
+		return ret;
+
+	ret = execute_parasite_checkpoint(pid);
+	return ret;
+}
+
+static int restore_worker(pid_t pid)
+{
+	int ret;
+
+	ret = execute_parasite_restore(pid);
+	if (ret)
+		return ret;
+
+	ret = unseize_target();
+	return ret;
+}
+
+static int service_mode(int listen)
+{
+	int csd, ret;
+	struct service_command svc_cmd = {};
+
+	csd = setup_listen_socket(listen);
+	if (csd < 0)
+		return -1;
+
+	fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
+
+	ret = read_command(csd, &svc_cmd);
+
+	if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
+		fprintf(stderr, "%s(): Wrong command received (cmd: %d) on checkpoint phase!\n", __func__, svc_cmd.cmd);
+		return -1;
+	}
+
+	pid = svc_cmd.pid;
+
+	ret = checkpoint_worker(pid);
+	if (ret)
+		return ret;
+
+	ret = read_command(csd, &svc_cmd);
+	if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
+		fprintf(stderr, "%s(): Wrong command received (cmd: %d, pid: %d) on restore phase!\n", __func__, svc_cmd.cmd, svc_cmd.pid);
+		return -1;
+	}
+
+	ret = restore_worker(pid);
+
+	close(csd);
+	return ret;
+}
+
+static int user_interactive_mode(pid_t pid)
+{
+	int ret;
+	ret = checkpoint_worker(pid);
+	if (ret)
+		return ret;
+
+	if (!nowait) {
+		long dms;
+		long h, m, s, ms;
+		struct timespec ts;
+
+		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		fgetc(stdin);
+		dms = diff_ms(&ts);
+		h = dms/1000/60/60;
+		m = (dms/1000/60) % 60;
+		s = (dms/1000) % 60;
+		ms = dms % 1000;
+		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+	}
+
+	ret = restore_worker(pid);
+	return ret;
 }
 
 static void usage(const char *name, int status)
@@ -1450,10 +1519,9 @@ static void usage(const char *name, int status)
 
 int main(int argc, char *argv[])
 {
-	int csd, ret;
+	int ret;
 	int opt;
 	int option_index;
-	struct service_command svc_cmd = {};
 
 	static struct option long_options[] = {
 		{ "help",			0,	0,	0},
@@ -1501,44 +1569,11 @@ int main(int argc, char *argv[])
 	signal(SIGINT, signal_handler);
 
 	if (listen_port > 0) {
-		csd = setup_listen_socket(listen_port);
-		if (csd < 0)
-			return -1;
-
-		fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
-
-		ret = read_command(csd, &svc_cmd);
-
-		fprintf(stdout, "Read command %d, pid %d, ret %d.\n", svc_cmd.cmd, svc_cmd.pid, ret);
-
-		if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
-			fprintf(stderr, "%s(): Wrong command received on checkpoint phase!\n", __func__);
-			return -1;
-		}
-
-		pid = svc_cmd.pid;
+		ret = service_mode(listen_port);
+	} else {
+		ret = user_interactive_mode(pid);
 	}
 
-	ret = seize_target(pid);
-	if (ret)
-		return ret;
-
-	execute_parasite_checkpoint(pid);
-	if (listen_port > 0) {
-		ret = read_command(csd, &svc_cmd);
-		if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
-			fprintf(stderr, "%s(): Wrong command received on restore phase!\n", __func__);
-			return -1;
-		}
-	} else if (!nowait) {
-		user_interactive_mode();
-	}
-	execute_parasite_restore(pid);
-
-	if (csd)
-		close(csd);
-
-	ret = unseize_target();
 	if (ret)
 		return ret;
 
