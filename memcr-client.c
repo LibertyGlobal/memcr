@@ -62,15 +62,22 @@ retry:
 static int send_cmd(int cd, struct service_command cmd)
 {
 	int ret;
+	struct service_response resp = {0};
 
-	ret = write(cd, &cmd, sizeof(cmd));
-	if (ret != sizeof(cmd)) {
+	ret = write(cd, &cmd, sizeof(struct service_command));
+	if (ret != sizeof(struct service_command)) {
 		fprintf(stderr, "%s() write request failed: ret %d, errno %m\n", __func__, ret);
-		close(cd);
 		return -1;
 	}
 
-	close(cd);
+	ret = read(cd, &resp, sizeof(struct service_response));
+	if (ret != sizeof(struct service_response)) {
+		fprintf(stderr, "%s() read response failed: ret %d, errno %m\n", __func__, ret);
+		return -1;
+	}
+
+	fprintf(stdout, "Procedure finished with %s status.\n", MEMCR_OK == resp.resp_code ? "OK" : "ERROR");
+
 	return 0;
 }
 
@@ -161,6 +168,7 @@ int main(int argc, char *argv[])
 	}
 
 	fprintf(stdout, "Command executed, exiting.\n");
+	close(cd);
 
 	return ret;
 }

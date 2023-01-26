@@ -1397,22 +1397,31 @@ static void signal_handler(int signal)
 	}
 }
 
-static int read_command(int csd, struct service_command * svc_cmd)
+static int read_command(int cd, struct service_command * svc_cmd)
 {
-	int cd, ret;
-
-	cd = accept(csd, NULL, NULL);
-	if (cd < 0)
-		return cd;
+	int ret;
 
 	ret = xread(cd, svc_cmd, sizeof(struct service_command));
 	if (ret != sizeof(struct service_command)) {
 		fprintf(stderr, "%s(): ret %d, errno %m\n", __func__, ret);
 		return -1;
 	}
-	close(cd);
 
 	return ret;
+}
+
+static int send_response_to_client(int cd, memcr_svc_response resp_code)
+{
+	struct service_response svc_resp = { .resp_code = resp_code };
+	int ret;
+
+	ret = xwrite(cd, &svc_resp, sizeof(svc_resp));
+	if (ret != sizeof(svc_resp)) {
+		fprintf(stderr, "%s(): Error sending response!\n", __func__);
+		return -1;
+	}
+
+	return 0;
 }
 
 static int checkpoint_worker(pid_t pid)
@@ -1441,7 +1450,7 @@ static int restore_worker(pid_t pid)
 
 static int service_mode(int listen)
 {
-	int csd, ret;
+	int csd, cd, ret;
 	struct service_command svc_cmd = {};
 
 	csd = setup_listen_socket(listen);
@@ -1451,27 +1460,47 @@ static int service_mode(int listen)
 	fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
 
 	while (!interrupted) {
-		ret = read_command(csd, &svc_cmd);
+		cd = accept(csd, NULL, NULL);
+		if (cd < 0)
+			return cd;
+
+		ret = read_command(cd, &svc_cmd);
 
 		if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
 			fprintf(stderr, "%s(): Wrong command received (cmd: %d) on checkpoint phase!\n", __func__, svc_cmd.cmd);
+			send_response_to_client(cd, MEMCR_ERROR);
+			close(cd);
 			continue;
 		}
 
 		pid = svc_cmd.pid;
 
 		ret = checkpoint_worker(pid);
-		if (ret)
+		ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
+		close(cd);
+
+		if (ret) {
+			close(csd);
 			return ret;
+		}
 
 read_restore:
-		ret = read_command(csd, &svc_cmd);
+		cd = accept(csd, NULL, NULL);
+		if (cd < 0)
+			return cd;
+
+		ret = read_command(cd, &svc_cmd);
+
 		if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
 			fprintf(stderr, "%s(): Wrong command received (cmd: %d, pid: %d) on restore phase!\n", __func__, svc_cmd.cmd, svc_cmd.pid);
+			send_response_to_client(cd, MEMCR_ERROR);
+			close(cd);
 			goto read_restore;
 		}
 
 		ret = restore_worker(pid);
+		ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
+		close(cd);
 	}
 
 	close(csd);
