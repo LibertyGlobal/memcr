@@ -52,6 +52,15 @@ struct service_command {
 	pid_t pid;
 } __attribute__((packed));
 
+typedef enum {
+	MEMCR_OK = 0,
+	MEMCR_ERROR = -1
+} memcr_svc_response;
+
+struct service_response {
+	memcr_svc_response resp_code;
+} __attribute__((packed));
+
 struct vm_skip_addr {
 	void *addr;
 	char desc;
