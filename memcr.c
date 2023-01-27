@@ -78,11 +78,11 @@ struct vm_area {
 	unsigned long flags;
 };
 
-static int pid;
 static char *dump_dir;
 static char *socket_dir;
 static int nowait;
 static int listen_port;
+static int target_pid;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
@@ -1448,10 +1448,58 @@ static int restore_worker(pid_t pid)
 	return ret;
 }
 
+static int handle_connection(int cd)
+{
+	int ret;
+	struct service_command svc_cmd = {};
+
+	ret = read_command(cd, &svc_cmd);
+
+	if (ret < 0) {
+		fprintf(stderr, "%s(): Error reading a command!\n", __func__);
+		return ret;
+	}
+
+	switch (svc_cmd.cmd) {
+		case MEMCR_CHECKPOINT: {
+			fprintf(stdout, "[+] got MEMCR_CHECKPOINT for %d.\n", svc_cmd.pid);
+
+			if (target_pid) {
+				fprintf(stdout, "[i] A Process is already checkpointed!\n");
+				send_response_to_client(cd, MEMCR_ERROR);
+				break;
+			}
+
+			ret = checkpoint_worker(svc_cmd.pid);
+			ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
+			target_pid = svc_cmd.pid;
+			break;
+		}
+		case MEMCR_RESTORE: {
+			fprintf(stdout, "[+] got MEMCR_RESTORE for %d.\n", svc_cmd.pid);
+
+			if (target_pid != svc_cmd.pid) {
+				fprintf(stdout, "[i] Process %d is not checkpointed!\n", svc_cmd.pid);
+				ret = send_response_to_client(cd, MEMCR_ERROR);
+				break;
+			}
+
+			ret = restore_worker(svc_cmd.pid);
+			ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
+			target_pid = 0;
+			break;
+		}
+		default:
+			fprintf(stderr, "%s() unexpected command %d\n", __func__, svc_cmd.cmd);
+			break;
+	}
+
+	return ret;
+}
+
 static int service_mode(int listen)
 {
 	int csd, cd, ret;
-	struct service_command svc_cmd = {};
 
 	csd = setup_listen_socket(listen);
 	if (csd < 0)
@@ -1464,43 +1512,9 @@ static int service_mode(int listen)
 		if (cd < 0)
 			return cd;
 
-		ret = read_command(cd, &svc_cmd);
-
-		if (ret < 0 || MEMCR_CHECKPOINT != svc_cmd.cmd) {
-			fprintf(stderr, "%s(): Wrong command received (cmd: %d) on checkpoint phase!\n", __func__, svc_cmd.cmd);
-			send_response_to_client(cd, MEMCR_ERROR);
-			close(cd);
-			continue;
-		}
-
-		pid = svc_cmd.pid;
-
-		ret = checkpoint_worker(pid);
-		ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
+		ret = handle_connection(cd);
 		close(cd);
-
-		if (ret) {
-			close(csd);
-			return ret;
-		}
-
-read_restore:
-		cd = accept(csd, NULL, NULL);
-		if (cd < 0)
-			return cd;
-
-		ret = read_command(cd, &svc_cmd);
-
-		if (ret < 0 || MEMCR_RESTORE != svc_cmd.cmd || pid != svc_cmd.pid) {
-			fprintf(stderr, "%s(): Wrong command received (cmd: %d, pid: %d) on restore phase!\n", __func__, svc_cmd.cmd, svc_cmd.pid);
-			send_response_to_client(cd, MEMCR_ERROR);
-			close(cd);
-			goto read_restore;
-		}
-
-		ret = restore_worker(pid);
-		ret |= send_response_to_client(cd, ret ? MEMCR_ERROR : MEMCR_OK);
-		close(cd);
+		fprintf(stdout, "[+] Request handled...\n");
 	}
 
 	close(csd);
@@ -1553,6 +1567,7 @@ static void usage(const char *name, int status)
 int main(int argc, char *argv[])
 {
 	int ret;
+	int pid;
 	int opt;
 	int option_index;
 
@@ -1569,6 +1584,7 @@ int main(int argc, char *argv[])
 	dump_dir = "/tmp";
 	socket_dir = NULL;
 	listen_port = -1;
+	target_pid = 0;
 
 	while ((opt = getopt_long(argc, argv, "hp:d:S:l:n", long_options, &option_index)) != -1) {
 		switch (opt) {
