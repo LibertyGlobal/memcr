@@ -115,7 +115,7 @@ $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
 	$(CC) $(MCFLAGS) -I$(B) -c $< -o $@
 
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
-	$(CC) $(MCFLAGS) $^ -o $@
+	$(CC) -pthread $(MCFLAGS) $^ -o $@
 
 $(B)/memcr-client.o: memcr-client.c
 	$(CC) $(CFLAGS) -I$(B) -c $< -o $@

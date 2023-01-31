@@ -82,9 +82,11 @@ static char *dump_dir;
 static char *socket_dir;
 static int nowait;
 static int listen_port;
+static int procedure_timeout;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
+#define PROC_TIMEOUT_DEFAULT	60 // seconds
 
 static pid_t tids[MAX_THREADS];
 static int nr_threads;
@@ -155,6 +157,16 @@ static void clear_pid_on_worker_exit(pid_t worker)
 			checkpoint_workers[i] = PID_INVALID;
 		}
 	}
+}
+
+static pid_t get_worker(pid_t pid)
+{
+	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
+		if (checkpointed_pids[i] == pid) {
+			return checkpoint_workers[i];
+		}
+	}
+	return 0;
 }
 
 static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callback)(pid_t pid))
@@ -1607,6 +1619,16 @@ static int restore_worker(int rd)
 	return ret;
 }
 
+static void * checkpoint_guard_timer(void * worker_ptr)
+{
+	pid_t worker = *(pid_t*) worker_ptr;
+	fprintf(stdout, "[+] ... Guard timer %ds started for %d.\n", procedure_timeout, worker);
+	sleep(procedure_timeout);
+	fprintf(stdout, "[!] ... Worker %d is not responding, procedure will be interrupted!\n", worker);
+	kill(worker, SIGKILL);
+	return NULL;
+}
+
 static int application_worker(pid_t pid, int checkpoint_resp_socket)
 {
 	int rsd, rd, ret = 0;
@@ -1756,10 +1778,16 @@ static int handle_connection(int cd)
 				ret = application_worker(svc_cmd.pid, checkpoint_resp_sockets[1]);
 				exit(ret);
 			} else if (forkpid > 0) {
+				pthread_t guard;
+
 				set_pid_checkpointed(svc_cmd.pid, forkpid);
 				close(checkpoint_resp_sockets[1]);
 
+				pthread_create(&guard, NULL, checkpoint_guard_timer, &forkpid);
+				pthread_detach(guard);
+
 				checkpoint_procedure_service(checkpoint_resp_sockets[0], cd);
+				pthread_cancel(guard);
 			} else {
 				fprintf(stderr, "%s(): Fork error!\n", __func__);
 			}
@@ -1775,7 +1803,13 @@ static int handle_connection(int cd)
 				break;
 			}
 
+			pid_t worker = get_worker(svc_cmd.pid);
+			pthread_t guard;
+			pthread_create(&guard, NULL, checkpoint_guard_timer, &worker);
+			pthread_detach(guard);
+
 			restore_procedure_service(cd, svc_cmd);
+			pthread_cancel(guard);
 
 			clear_pid_checkpointed(svc_cmd.pid);
 			break;
@@ -1850,6 +1884,7 @@ static void usage(const char *name, int status)
 		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
 		"  -l --listen\tTCP port number to listen for requests\n" \
+		"  -T --timeout\ttimeout for procedure in service mode (60s by default)\n" \
 		"  -n --nowait\tno wait for key press\n",
 		name);
 	exit(status);
@@ -1868,6 +1903,7 @@ int main(int argc, char *argv[])
 		{ "dir",			1,	0,	0},
 		{ "parasite-socket-dir",	1,	0,	0},
 		{ "listen",			1,	0,	0},
+		{ "timeout",			1,	0,	0},
 		{ "nowait",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
@@ -1875,8 +1911,9 @@ int main(int argc, char *argv[])
 	dump_dir = "/tmp";
 	socket_dir = NULL;
 	listen_port = -1;
+	procedure_timeout = PROC_TIMEOUT_DEFAULT;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:n", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:T:n", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -1892,6 +1929,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'l':
 				listen_port = atoi(optarg);
+				break;
+			case 'T':
+				procedure_timeout = atoi(optarg);
 				break;
 			case 'n':
 				nowait = 1;
