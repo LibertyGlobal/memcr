@@ -1815,9 +1815,12 @@ static int service_mode(int listen)
 static int user_interactive_mode(pid_t pid)
 {
 	int ret;
-	ret = checkpoint_worker(pid);
+
+	ret = seize_target(pid);
 	if (ret)
 		return ret;
+
+	execute_parasite_checkpoint(pid);
 
 	if (!nowait) {
 		long dms;
@@ -1835,7 +1838,10 @@ static int user_interactive_mode(pid_t pid)
 		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
 	}
 
-	ret = restore_worker(pid);
+	execute_parasite_restore(pid);
+
+	ret = unseize_target();
+
 	return ret;
 }
 
