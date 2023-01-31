@@ -110,6 +110,7 @@ static int interrupted;
 #define CHECKPOINTED_PIDS_LIMIT 16
 #define PID_INVALID		0
 static pid_t checkpointed_pids[CHECKPOINTED_PIDS_LIMIT];
+static pid_t checkpoint_workers[CHECKPOINTED_PIDS_LIMIT];
 
 static int is_pid_checkpointed(pid_t pid)
 {
@@ -122,7 +123,7 @@ static int is_pid_checkpointed(pid_t pid)
 	return 0;
 }
 
-static void set_pid_checkpointed(pid_t pid)
+static void set_pid_checkpointed(pid_t pid, pid_t worker)
 {
 	if (is_pid_checkpointed(pid))
 		return;
@@ -130,6 +131,7 @@ static void set_pid_checkpointed(pid_t pid)
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpointed_pids[i] == PID_INVALID) {
 			checkpointed_pids[i] = pid;
+			checkpoint_workers[i] = worker;
 			return;
 		}
 	}
@@ -141,6 +143,16 @@ static void clear_pid_checkpointed(pid_t pid)
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpointed_pids[i] == pid) {
 			checkpointed_pids[i] = PID_INVALID;
+		}
+	}
+}
+
+static void clear_pid_on_worker_exit(pid_t worker)
+{
+	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
+		if (checkpoint_workers[i] == worker) {
+			checkpointed_pids[i] = PID_INVALID;
+			checkpoint_workers[i] = PID_INVALID;
 		}
 	}
 }
@@ -1424,14 +1436,36 @@ static int execute_parasite_restore(pid_t pid)
 	return 0;
 }
 
-static void signal_handler(int signal)
+static void sigint_handler(int signal)
 {
-	if (signal == SIGINT) {
-		interrupted = 1;
-		fprintf(stdout, "%s() got SIGINT\n", __func__);
-	} else {
-		fprintf(stderr, "%s() unexpected signal %d\n", __func__, signal);
+	interrupted = 1;
+	fprintf(stdout, "%s() got SIGINT\n", __func__);
+}
+
+static void sigchld_handler_service (int sig, siginfo_t *sip, void *notused)
+{
+	int status;
+	if (sip->si_pid == waitpid(sip->si_pid, &status, WNOHANG)) {
+		fprintf(stdout, "[+] Worker %d exit.\n", sip->si_pid);
+		clear_pid_on_worker_exit(sip->si_pid);
 	}
+}
+
+static void sigchld_handler_worker(int signal)
+{
+	pid_t pid;
+	int   status;
+
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		fprintf(stdout, "[%d] SIHCHLD received for %d...\n", getpid(), pid);
+	}
+	fprintf(stdout, "[%d] Tracee killed, worker exit!\n", getpid());
+	exit(0);
+}
+
+static void sigpipe_handler(int sig, siginfo_t *sip, void *notused)
+{
+	fprintf(stdout, "[!] program received SIGPIPE from %d.\n", sip->si_pid);
 }
 
 static int read_command(int cd, struct service_command * svc_cmd)
@@ -1541,7 +1575,13 @@ static int checkpoint_worker(pid_t pid)
 		return ret;
 
 	ret = execute_parasite_checkpoint(pid);
-	return ret;
+	if (ret) {
+		fprintf(stderr, "[%d] Parasite checkpoint failed!\n", getpid());
+		return ret;
+	}
+
+	signal(SIGCHLD, sigchld_handler_worker);
+	return 0;
 }
 
 static int restore_worker(int rd)
@@ -1558,6 +1598,7 @@ static int restore_worker(int rd)
 
 	fprintf(stdout, "[%d] Worker received RESTORE command for %d.\n", getpid(), post_checkpoint_cmd.pid);
 
+	signal(SIGCHLD, SIG_DFL);
 	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
 	if (ret)
 		return ret;
@@ -1661,6 +1702,23 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd)
 	}
 }
 
+void register_signal_handlers()
+{
+	struct sigaction sigchld_action, sigpipe_action;
+
+	sigchld_action.sa_sigaction = sigchld_handler_service;
+	sigfillset(&sigchld_action.sa_mask);
+	sigchld_action.sa_flags = SA_SIGINFO | SA_NOCLDSTOP | SA_RESTART;
+
+	sigpipe_action.sa_sigaction = sigpipe_handler;
+	sigfillset(&sigpipe_action.sa_mask);
+	sigpipe_action.sa_flags = SA_SIGINFO;
+
+	sigaction(SIGCHLD, &sigchld_action, NULL);
+	sigaction(SIGPIPE, &sigpipe_action, NULL);
+	signal(SIGINT, sigint_handler);
+}
+
 static int handle_connection(int cd)
 {
 	int ret;
@@ -1698,7 +1756,7 @@ static int handle_connection(int cd)
 				ret = application_worker(svc_cmd.pid, checkpoint_resp_sockets[1]);
 				exit(ret);
 			} else if (forkpid > 0) {
-				set_pid_checkpointed(svc_cmd.pid);
+				set_pid_checkpointed(svc_cmd.pid, forkpid);
 				close(checkpoint_resp_sockets[1]);
 
 				checkpoint_procedure_service(checkpoint_resp_sockets[0], cd);
@@ -1847,8 +1905,7 @@ int main(int argc, char *argv[])
 		usage(argv[0], 1);
 	}
 
-	signal(SIGINT, signal_handler);
-	signal(SIGCHLD, SIG_IGN);
+	register_signal_handlers();
 
 	if (listen_port > 0) {
 		ret = service_mode(listen_port);
