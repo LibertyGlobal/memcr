@@ -30,6 +30,7 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <stdarg.h>
 #include <dirent.h>
 #include <signal.h>
 #include <sys/ptrace.h>
@@ -81,7 +82,6 @@ struct vm_area {
 static char *dump_dir;
 static char *socket_dir;
 static int nowait;
-static int listen_port;
 
 #define PATH_MAX        4096	/* # chars in a path name including nul */
 #define MAX_THREADS		1024
@@ -1861,12 +1861,24 @@ static void usage(const char *name, int status)
 	exit(status);
 }
 
+void die(const char *fmt, ...)
+{
+        va_list ap;
+
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+
+        exit(1);
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
-	int pid;
 	int opt;
 	int option_index;
+	int pid = 0;
+	int listen_port = 0;
 
 	static struct option long_options[] = {
 		{ "help",			0,	0,	0},
@@ -1880,7 +1892,6 @@ int main(int argc, char *argv[])
 
 	dump_dir = "/tmp";
 	socket_dir = NULL;
-	listen_port = -1;
 
 	while ((opt = getopt_long(argc, argv, "hp:d:S:l:n", long_options, &option_index)) != -1) {
 		switch (opt) {
@@ -1907,13 +1918,18 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!pid && !listen_port) {
+	if (!pid && !listen_port)
 		usage(argv[0], 1);
-	}
+
+	if (pid <= 0 && !listen_port)
+		die("pid must be > 0\n");
+
+	if (!pid && listen_port <= 0)
+		die("listen port must be > 0\n");
 
 	register_signal_handlers();
 
-	if (listen_port > 0) {
+	if (listen_port) {
 		ret = service_mode(listen_port);
 	} else {
 		ret = user_interactive_mode(pid);
