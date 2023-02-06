@@ -1634,12 +1634,10 @@ static int application_worker(pid_t pid, int checkpoint_resp_socket)
 	if (rd < 0) {
 		fprintf(stderr, "%s() failed on socket accept.\n", __func__);
 		close(rsd);
-		ret |= rd;
+		return rd;
 	}
 
-	if (0 == ret) {
-		ret |= restore_worker(rd);
-	}
+	ret = restore_worker(rd);
 	ret |= send_response_to_service(rd, ret);
 
 	close(rsd);
