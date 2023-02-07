@@ -49,14 +49,6 @@
 #include "arch/enter.h"
 #include "parasite-blob.h"
 
-#ifndef __SIZEOF_LONG__
-#error __SIZEOF_LONG__ undefined
-#endif
-
-#if __SIZEOF_LONG__ != 4 && __SIZEOF_LONG__ != 8
-#error unhandled __SIZEOF_LONG__ value
-#endif
-
 #define NT_PRSTATUS 1
 
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
@@ -1128,22 +1120,46 @@ static int write_cpu_regs(pid_t pid, struct registers *regs)
 	return ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov);
 }
 
-static unsigned long execute_blob(pid_t tid, unsigned long *pc, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
+static int peek(pid_t pid, unsigned long *addr, unsigned long *dst, size_t len)
 {
-	int ret;
-	struct registers regs, saved_regs;
+	int i;
 
-	siginfo_t si;
-	int i, status;
-
-	/* inject blob into the host */
-	for (i = 0; i < DIV_ROUND_UP(size, sizeof(unsigned long)); i++) {
-		ret = ptrace(PTRACE_POKEDATA, tid, pc + i, (void *)*((unsigned long *)blob + i));
-		if (ret) {
-			fprintf(stderr, "ptrace(PTRACE_POKEDATA) failed: %m\n");
-			assert(!ret);
+	for (i = 0; i < DIV_ROUND_UP(len, sizeof(unsigned long)); i++) {
+		errno = 0;
+		dst[i] = ptrace(PTRACE_PEEKDATA, pid, addr + i, NULL);
+		if (errno) {
+			fprintf(stderr, "[-] %s() failed addr %p, dst %p, i %d: %m\n", __func__, addr, dst, i);
+			return errno;
 		}
 	}
+
+	return 0;
+}
+
+static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < DIV_ROUND_UP(len, sizeof(unsigned long)); i++) {
+		ret = ptrace(PTRACE_POKEDATA, pid, addr + i, *(src + i));
+		if (ret) {
+			fprintf(stderr, "[-] %s() failed addr %p, src %p, i %d: %m\n", __func__, addr, src, i);
+			break;
+		}
+	}
+
+	return ret;
+}
+
+static unsigned long execute_blob(pid_t tid, unsigned long *pc, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
+{
+	struct registers regs, saved_regs;
+	siginfo_t si;
+	int status;
+
+	/* inject blob into the host */
+	poke(tid, pc, (unsigned long *)blob, size);
 
 retry:
 	read_cpu_regs(tid, &regs);
@@ -1243,65 +1259,15 @@ static int update_parasite_pid(pid_t pid)
 static int setup_parasite_args(pid_t pid, void *base)
 {
 	struct parasite_args pa;
-	unsigned long *pa_src = (unsigned long *)&pa;
-	unsigned long *pa_dst;
-	int i;
+	unsigned long *src = (unsigned long *)&pa;
+	unsigned long *dst = (unsigned long *)PARASITE_ARGS_ADDR(base);
 
-	pa_dst = (unsigned long *)PARASITE_ARGS_ADDR(base);
-
-	if (socket_dir) {
+	if (socket_dir)
 		create_filesystem_socketname(pa.addr, sizeof(pa.addr), pid);
-	} else {
+	else
 		create_abstract_socketname(pa.addr, sizeof(pa.addr), pid);
-	}
 
-	for (i = 0; i < DIV_ROUND_UP(sizeof(struct parasite_args), sizeof(unsigned long)); i++) {
-		assert(!ptrace(PTRACE_POKEDATA, pid, pa_dst + i, *(pa_src + i)));
-	}
-
-	return 0;
-}
-
-static int sigset_peek(pid_t pid, unsigned long *addr, uint64_t *sigset)
-{
-	unsigned long tmp;
-
-	errno = 0;
-	tmp = ptrace(PTRACE_PEEKDATA, pid, addr + 0, NULL);
-	if (errno)
-		goto err;
-	*sigset = tmp;
-#if __SIZEOF_LONG__ == 4
-	tmp = ptrace(PTRACE_PEEKDATA, pid, addr + 1, NULL);
-	if (errno)
-		goto err;
-	*sigset |= (uint64_t)tmp << 32;
-#endif
-	return 0;
-
-err:
-	fprintf(stderr, "[-] %s(): peek data failed: %m", __func__);
-	return -1;
-}
-
-static int sigset_poke(pid_t pid, unsigned long *addr, uint64_t sigset)
-{
-	int ret;
-	unsigned long *ptr = (unsigned long *)&sigset;
-
-	ret = ptrace(PTRACE_POKEDATA, pid, addr + 0, *(ptr + 0));
-	if (ret)
-		goto err;
-#if __SIZEOF_LONG__ == 4
-	ret = ptrace(PTRACE_POKEDATA, pid, addr + 1, *(ptr + 1));
-	if (ret)
-		goto err;
-#endif
-	return 0;
-
-err:
-	fprintf(stderr, "[-] %s(): poke data failed: %m\n", __func__);
-	return ret;
+	return poke(pid, dst, src, sizeof(pa));
 }
 
 static int execute_parasite_checkpoint(pid_t pid)
@@ -1311,7 +1277,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	uint64_t sigset_new;
 	uint64_t sigset_old;
 	pid_t parasite;
-	int i, status;
+	int status;
 	struct vm_skip_addr paddr;
 
 	read_cpu_regs(pid, &regs);
@@ -1337,12 +1303,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	 * space.  Determine the position and save the original code.
 	 */
 	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-	for (i = 0; i < ctx.count; i++) {
-		ctx.saved_code[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.pc + i, NULL);
-#if 0
-		fprintf(stdout, "code[%d]\t%s %0*lx\n", i, i > 9 ? "" : "\t", 2 * (int)sizeof(unsigned long), ctx.saved_code[i]);
-#endif
-	}
+	peek(pid, ctx.pc, ctx.saved_code, ctx.count);
 
 	/*
 	 * Save and restore some bytes below %rsp so that blobs can use it
@@ -1350,12 +1311,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	 * is done earlier.
 	 */
 	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.saved_stack);
-	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++) {
-		ctx.saved_stack[i] = ptrace(PTRACE_PEEKDATA, pid, ctx.sp + i, NULL);
-#if 0
-		fprintf(stdout, "stack[%d]\t %0*lx\n", i, 2 * (int)sizeof(unsigned long), ctx.saved_stack[i]);
-#endif
-	}
+	peek(pid, ctx.sp, ctx.saved_stack, sizeof(ctx.saved_stack));
 
 #if 0
 	/* say hi! */
@@ -1366,10 +1322,10 @@ static int execute_parasite_checkpoint(pid_t pid)
 	/* block all signals */
 	printf("[+] blocking all signals\n");
 	sigset_new = -1;
-	sigset_poke(pid, ctx.sp, sigset_new);
+	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	arg0 = (unsigned long)ctx.sp;
 	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
-	sigset_peek(pid, ctx.sp, &sigset_old);
+	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 #if DEBUG_SIGSET
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
@@ -1390,8 +1346,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	/* copy parasite_blob into the mmapped area */
 	ctx.dst = (void *)ret;
 	ctx.src = (void *)parasite_blob;
-	for (i = 0; i < DIV_ROUND_UP(sizeof(parasite_blob), sizeof(unsigned long)); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.dst + i, ctx.src[i]));
+	poke(pid, ctx.dst, ctx.src, sizeof(parasite_blob));
 
 	setup_parasite_args(pid, ctx.dst);
 
@@ -1439,7 +1394,7 @@ static int execute_parasite_restore(pid_t pid)
 #if DEBUG_SIGSET
 	uint64_t sigset_old;
 #endif
-	int i, status;
+	int status;
 
 	cmd_restore(pid);
 
@@ -1469,22 +1424,18 @@ static int execute_parasite_restore(pid_t pid)
 	/* restore the original sigset */
 	printf("[+] unblocking signals\n");
 	sigset_new = ctx.sigset;
-	sigset_poke(pid, ctx.sp, sigset_new);
+	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	arg0 = (unsigned long)ctx.sp;
 	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if DEBUG_SIGSET
-	sigset_peek(pid, ctx.sp, &sigset_old);
+	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
 	assert(!ret);
 
 	/* restore the original code and stack area */
-	for (i = 0; i < ctx.count; i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.pc + i, (void *)ctx.saved_code[i]));
-
-	for (i = 0; i < sizeof(ctx.saved_stack) / sizeof(ctx.saved_stack[0]); i++)
-		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp + i, (void *)ctx.saved_stack[i]));
-
+	poke(pid, ctx.pc, ctx.saved_code, ctx.count);
+	poke(pid, ctx.sp, ctx.saved_stack, sizeof(ctx.saved_stack));
 	free(ctx.saved_code);
 
 	return 0;
