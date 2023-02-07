@@ -56,6 +56,10 @@
 #define round_down(x, y) ((x) & ~__round_mask(x, y))
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
 
+#ifndef SI_FROMUSER
+#define SI_FROMUSER(siptr)	((siptr)->si_code <= 0)
+#endif
+
 #define PARASITE_CMD_ADDR(start)	(((char *)start) + parasite_blob_offset__parasite_cmd)
 #define PARASITE_ARGS_ADDR(start)	(((char *)start) + parasite_blob_offset__parasite_args)
 
@@ -1154,6 +1158,7 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 
 static unsigned long execute_blob(struct target_context *ctx, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
 {
+	unsigned long stack[2]; /* used for sigset only */
 	struct registers regs, saved_regs;
 	siginfo_t si;
 	int status;
@@ -1161,9 +1166,12 @@ static unsigned long execute_blob(struct target_context *ctx, const char *blob, 
 	/* inject blob into the host */
 	poke(ctx->pid, ctx->pc, (unsigned long *)blob, size);
 
+	/* save stack and regs */
+	peek(ctx->pid, ctx->sp, (unsigned long *)&stack, sizeof(stack));
+	read_cpu_regs(ctx->pid, &saved_regs);
+
 retry:
-	read_cpu_regs(ctx->pid, &regs);
-	saved_regs = regs;
+	regs = saved_regs;
 	set_cpu_regs(&regs, ctx->pc, arg0 ? *arg0 : 0, arg1 ? *arg1 : 0);
 	write_cpu_regs(ctx->pid, &regs);
 
@@ -1173,11 +1181,7 @@ retry:
 	assert(WIFSTOPPED(status));
 	assert(!ptrace(PTRACE_GETSIGINFO, ctx->pid, NULL, &si));
 
-#if defined (__x86_64__)
-	if (WSTOPSIG(status) != SIGTRAP || si.si_code != SI_KERNEL) { /* TODO */
-#elif defined (__arm__) || defined(__aarch64__)
-	if (WSTOPSIG(status) != SIGTRAP || si.si_code != 1) {
-#endif
+	if (WSTOPSIG(status) != SIGTRAP || SI_FROMUSER(&si)) {
 		/*
 		 * The only other thing which can happen is signal
 		 * delivery.  Restore registers so that signal frame
@@ -1194,15 +1198,13 @@ retry:
 		 * control returns to jboctl trap.
 		 *
 		 * Note that if signal is delivered between syscall and
-		 * int3 in the blob, the syscall might be executed again.
-		 * Block signals first before doing any operation with side
-		 * effects.
+		 * trapping instruction in the blob, the syscall might be
+		 * executed again. Block signals first before doing any
+		 * operation with side effects.
 		 */
 	retry_signal:
-		printf("** delivering signal %d si_code=%d\n", si.si_signo, si.si_code);
-#if defined(__x86_64__)
-		assert(si.si_code <= 0); /* TODO arm */
-#endif
+		printf("[i] delivering user signal %d si_code %d\n", si.si_signo, si.si_code);
+
 		write_cpu_regs(ctx->pid, &saved_regs);
 
 		assert(!ptrace(PTRACE_INTERRUPT, ctx->pid, NULL, NULL));
@@ -1217,6 +1219,9 @@ retry:
 		/* are we back at jobctl trap or are there more signals? */
 		if (si.si_code >> 8 != PTRACE_EVENT_STOP)
 			goto retry_signal;
+
+		/* restore stack */
+		poke(ctx->pid, ctx->sp, (unsigned long *)&stack, sizeof(stack));
 
 		/* otherwise, retry */
 		goto retry;
