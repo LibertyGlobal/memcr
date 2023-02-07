@@ -1156,7 +1156,7 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 	return ret;
 }
 
-static unsigned long execute_blob(struct target_context *ctx, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
+static unsigned long execute_blob(struct target_context *ctx, const char *blob, size_t size, unsigned long arg0, unsigned long arg1)
 {
 	unsigned long stack[2]; /* used for sigset only */
 	struct registers regs, saved_regs;
@@ -1172,7 +1172,7 @@ static unsigned long execute_blob(struct target_context *ctx, const char *blob, 
 
 retry:
 	regs = saved_regs;
-	set_cpu_regs(&regs, ctx->pc, arg0 ? *arg0 : 0, arg1 ? *arg1 : 0);
+	set_cpu_regs(&regs, ctx->pc, arg0, arg1);
 	write_cpu_regs(ctx->pid, &regs);
 
 	/* let the blob run, upon completion it will trigger debug trap */
@@ -1243,9 +1243,6 @@ retry:
 	read_cpu_regs(ctx->pid, &regs);
 	write_cpu_regs(ctx->pid, &saved_regs);
 
-	if (arg0)
-		*arg0 = get_cpu_syscall_arg0(&regs);
-
 	return get_cpu_syscall_ret(&regs);
 }
 
@@ -1277,8 +1274,8 @@ static int setup_parasite_args(pid_t pid, void *base)
 
 static int execute_parasite_checkpoint(pid_t pid)
 {
+	unsigned long ret;
 	struct registers regs;
-	unsigned long arg0, ret;
 	uint64_t sigset_new;
 	uint64_t sigset_old;
 	pid_t parasite;
@@ -1329,8 +1326,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	printf("[+] blocking all signals\n");
 	sigset_new = -1;
 	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
-	arg0 = (unsigned long)ctx.sp;
-	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 #if DEBUG_SIGSET
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
@@ -1342,8 +1338,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 #if 0
 	printf("executing mmap blob\n");
 #endif
-	arg0 = sizeof(parasite_blob);
-	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, sizeof(parasite_blob), 0);
 #if 0
 	printf(" = %#lx\n", ret);
 #endif
@@ -1364,8 +1359,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 #if 0
 	printf("executing clone blob\n");
 #endif
-	arg0 = (unsigned long)ctx.blob;
-	parasite = execute_blob(&ctx, clone_blob, clone_blob_size, &arg0, NULL);
+	parasite = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);
 #if 0
 	printf(" = %d\n", parasite);
 #endif
@@ -1393,7 +1387,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 
 static int execute_parasite_restore(pid_t pid)
 {
-	unsigned long arg0, arg1, ret;
+	unsigned long ret;
 	pid_t parasite = parasite_pid;
 	uint64_t sigset_new;
 #if DEBUG_SIGSET
@@ -1418,9 +1412,7 @@ static int execute_parasite_restore(pid_t pid)
 #if 0
 	printf("executing munmap blob\n");
 #endif
-	arg0 = (unsigned long)ctx.blob;
-	arg1 = sizeof(parasite_blob);
-	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, &arg0, &arg1);
+	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, (unsigned long)ctx.blob, sizeof(parasite_blob));
 	if (ret) {
 		fprintf(stderr, "[-] munmap_blob failed: %ld\n", ret);
 		assert(!ret);
@@ -1430,8 +1422,7 @@ static int execute_parasite_restore(pid_t pid)
 	printf("[+] unblocking signals\n");
 	sigset_new = ctx.sigset;
 	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
-	arg0 = (unsigned long)ctx.sp;
-	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
 #if DEBUG_SIGSET
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
