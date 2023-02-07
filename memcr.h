@@ -87,12 +87,11 @@ struct vm_page {
 struct target_context {
 	unsigned long *pc;
 	unsigned long *sp;
-	unsigned long *src;
-	unsigned long *dst;
-	unsigned long *saved_code;
-	unsigned long saved_stack[16];
+	unsigned long *code;
+	unsigned long code_size;
+	unsigned long stack[16];
 	uint64_t sigset;
-	int count;
+	unsigned long *blob;
 };
 
 #endif
