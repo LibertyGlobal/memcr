@@ -1287,15 +1287,15 @@ static int execute_parasite_checkpoint(pid_t pid)
 #endif
 
 	/* allocate space to save original code */
-	ctx.count = DIV_ROUND_UP(MAX(test_blob_size,
+	ctx.code_size = DIV_ROUND_UP(MAX(test_blob_size,
 				 MAX(sigprocmask_blob_size,
 				 MAX(mmap_blob_size,
 				 MAX(clone_blob_size,
 				 munmap_blob_size)))),
 				 sizeof(unsigned long));
 
-	ctx.saved_code = malloc(sizeof(unsigned long) * ctx.count);
-	assert(ctx.saved_code);
+	ctx.code = malloc(sizeof(unsigned long) * ctx.code_size);
+	assert(ctx.code);
 
 	/*
 	 * The page %rip is on gotta be executable.  If we inject from the
@@ -1303,15 +1303,15 @@ static int execute_parasite_checkpoint(pid_t pid)
 	 * space.  Determine the position and save the original code.
 	 */
 	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-	peek(pid, ctx.pc, ctx.saved_code, ctx.count);
+	peek(pid, ctx.pc, ctx.code, ctx.code_size);
 
 	/*
 	 * Save and restore some bytes below %rsp so that blobs can use it
 	 * as writeable scratch area.  This wouldn't be necessary if mmap
 	 * is done earlier.
 	 */
-	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.saved_stack);
-	peek(pid, ctx.sp, ctx.saved_stack, sizeof(ctx.saved_stack));
+	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.stack);
+	peek(pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
 
 #if 0
 	/* say hi! */
@@ -1344,14 +1344,13 @@ static int execute_parasite_checkpoint(pid_t pid)
 	assert(ret < -4096LU);
 
 	/* copy parasite_blob into the mmapped area */
-	ctx.dst = (void *)ret;
-	ctx.src = (void *)parasite_blob;
-	poke(pid, ctx.dst, ctx.src, sizeof(parasite_blob));
+	ctx.blob = (void *)ret;
+	poke(pid, ctx.blob, (unsigned long *)parasite_blob, sizeof(parasite_blob));
 
-	setup_parasite_args(pid, ctx.dst);
+	setup_parasite_args(pid, ctx.blob);
 
 	/* skip parasite vma */
-	paddr.addr = ctx.dst;
+	paddr.addr = ctx.blob;
 	paddr.desc = 's';
 	set_skip_addr(paddr);
 
@@ -1359,7 +1358,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 #if 0
 	printf("executing clone blob\n");
 #endif
-	arg0 = (unsigned long)ctx.dst;
+	arg0 = (unsigned long)ctx.blob;
 	parasite = execute_blob(pid, ctx.pc, clone_blob, clone_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %d\n", parasite);
@@ -1413,7 +1412,7 @@ static int execute_parasite_restore(pid_t pid)
 #if 0
 	printf("executing munmap blob\n");
 #endif
-	arg0 = (unsigned long)ctx.dst;
+	arg0 = (unsigned long)ctx.blob;
 	arg1 = sizeof(parasite_blob);
 	ret = execute_blob(pid, ctx.pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
 	if (ret) {
@@ -1434,9 +1433,9 @@ static int execute_parasite_restore(pid_t pid)
 	assert(!ret);
 
 	/* restore the original code and stack area */
-	poke(pid, ctx.pc, ctx.saved_code, ctx.count);
-	poke(pid, ctx.sp, ctx.saved_stack, sizeof(ctx.saved_stack));
-	free(ctx.saved_code);
+	poke(pid, ctx.pc, ctx.code, ctx.code_size);
+	poke(pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
+	free(ctx.code);
 
 	return 0;
 }
