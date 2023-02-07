@@ -85,6 +85,7 @@ struct vm_page {
 } __attribute__((packed));
 
 struct target_context {
+	pid_t pid;
 	unsigned long *pc;
 	unsigned long *sp;
 	unsigned long *code;

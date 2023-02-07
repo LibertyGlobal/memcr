@@ -1152,26 +1152,26 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 	return ret;
 }
 
-static unsigned long execute_blob(pid_t tid, unsigned long *pc, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
+static unsigned long execute_blob(struct target_context *ctx, const char *blob, size_t size, unsigned long *arg0, unsigned long *arg1)
 {
 	struct registers regs, saved_regs;
 	siginfo_t si;
 	int status;
 
 	/* inject blob into the host */
-	poke(tid, pc, (unsigned long *)blob, size);
+	poke(ctx->pid, ctx->pc, (unsigned long *)blob, size);
 
 retry:
-	read_cpu_regs(tid, &regs);
+	read_cpu_regs(ctx->pid, &regs);
 	saved_regs = regs;
-	set_cpu_regs(&regs, pc, arg0 ? *arg0 : 0, arg1 ? *arg1 : 0);
-	write_cpu_regs(tid, &regs);
+	set_cpu_regs(&regs, ctx->pc, arg0 ? *arg0 : 0, arg1 ? *arg1 : 0);
+	write_cpu_regs(ctx->pid, &regs);
 
 	/* let the blob run, upon completion it will trigger debug trap */
-	assert(!ptrace(PTRACE_CONT, tid, NULL, NULL));
-	assert(wait4(tid, &status, __WALL, NULL) == tid);
+	assert(!ptrace(PTRACE_CONT, ctx->pid, NULL, NULL));
+	assert(wait4(ctx->pid, &status, __WALL, NULL) == ctx->pid);
 	assert(WIFSTOPPED(status));
-	assert(!ptrace(PTRACE_GETSIGINFO, tid, NULL, &si));
+	assert(!ptrace(PTRACE_GETSIGINFO, ctx->pid, NULL, &si));
 
 #if defined (__x86_64__)
 	if (WSTOPSIG(status) != SIGTRAP || si.si_code != SI_KERNEL) { /* TODO */
@@ -1203,16 +1203,16 @@ retry:
 #if defined(__x86_64__)
 		assert(si.si_code <= 0); /* TODO arm */
 #endif
-		write_cpu_regs(tid, &saved_regs);
+		write_cpu_regs(ctx->pid, &saved_regs);
 
-		assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
-		assert(!ptrace(PTRACE_CONT, tid, NULL,
+		assert(!ptrace(PTRACE_INTERRUPT, ctx->pid, NULL, NULL));
+		assert(!ptrace(PTRACE_CONT, ctx->pid, NULL,
 			       (void *)(unsigned long)si.si_signo));
 
 		/* wait for trap */
-		assert(wait4(tid, &status, __WALL, NULL) == tid);
+		assert(wait4(ctx->pid, &status, __WALL, NULL) == ctx->pid);
 		assert(WIFSTOPPED(status));
-		assert(!ptrace(PTRACE_GETSIGINFO, tid, NULL, &si));
+		assert(!ptrace(PTRACE_GETSIGINFO, ctx->pid, NULL, &si));
 
 		/* are we back at jobctl trap or are there more signals? */
 		if (si.si_code >> 8 != PTRACE_EVENT_STOP)
@@ -1226,17 +1226,17 @@ retry:
 	 * Okay, this is the SIGTRAP delivery from int 3 / udf 16 / brk 0. Steer the thread
 	 * back to jobctl trap by raising INTERRUPT and squashing SIGTRAP.
 	 */
-	assert(!ptrace(PTRACE_INTERRUPT, tid, NULL, NULL));
-	assert(!ptrace(PTRACE_CONT, tid, NULL, NULL));
+	assert(!ptrace(PTRACE_INTERRUPT, ctx->pid, NULL, NULL));
+	assert(!ptrace(PTRACE_CONT, ctx->pid, NULL, NULL));
 
-	assert(wait4(tid, &status, __WALL, NULL) == tid);
+	assert(wait4(ctx->pid, &status, __WALL, NULL) == ctx->pid);
 	assert(WIFSTOPPED(status));
-	assert(!ptrace(PTRACE_GETSIGINFO, tid, NULL, &si));
+	assert(!ptrace(PTRACE_GETSIGINFO, ctx->pid, NULL, &si));
 	assert(SI_EVENT(si.si_code) == PTRACE_EVENT_STOP);
 
 	/* retrieve return value and restore registers */
-	read_cpu_regs(tid, &regs);
-	write_cpu_regs(tid, &saved_regs);
+	read_cpu_regs(ctx->pid, &regs);
+	write_cpu_regs(ctx->pid, &saved_regs);
 
 	if (arg0)
 		*arg0 = get_cpu_syscall_arg0(&regs);
@@ -1285,6 +1285,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 #if 0
 	print_cpu_regs(&regs);
 #endif
+	ctx.pid = pid;
 
 	/* allocate space to save original code */
 	ctx.code_size = DIV_ROUND_UP(MAX(test_blob_size,
@@ -1324,7 +1325,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	sigset_new = -1;
 	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	arg0 = (unsigned long)ctx.sp;
-	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 #if DEBUG_SIGSET
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
@@ -1337,7 +1338,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	printf("executing mmap blob\n");
 #endif
 	arg0 = sizeof(parasite_blob);
-	ret = execute_blob(pid, ctx.pc, mmap_blob, mmap_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %#lx\n", ret);
 #endif
@@ -1359,7 +1360,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	printf("executing clone blob\n");
 #endif
 	arg0 = (unsigned long)ctx.blob;
-	parasite = execute_blob(pid, ctx.pc, clone_blob, clone_blob_size, &arg0, NULL);
+	parasite = execute_blob(&ctx, clone_blob, clone_blob_size, &arg0, NULL);
 #if 0
 	printf(" = %d\n", parasite);
 #endif
@@ -1414,7 +1415,7 @@ static int execute_parasite_restore(pid_t pid)
 #endif
 	arg0 = (unsigned long)ctx.blob;
 	arg1 = sizeof(parasite_blob);
-	ret = execute_blob(pid, ctx.pc, munmap_blob, munmap_blob_size, &arg0, &arg1);
+	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, &arg0, &arg1);
 	if (ret) {
 		fprintf(stderr, "[-] munmap_blob failed: %ld\n", ret);
 		assert(!ret);
@@ -1425,7 +1426,7 @@ static int execute_parasite_restore(pid_t pid)
 	sigset_new = ctx.sigset;
 	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	arg0 = (unsigned long)ctx.sp;
-	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
 #if DEBUG_SIGSET
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
