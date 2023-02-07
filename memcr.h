@@ -90,10 +90,10 @@ struct target_context {
 	unsigned long *src;
 	unsigned long *dst;
 	unsigned long *saved_code;
-	unsigned long saved_sigmask;
 	unsigned long saved_stack[16];
+	uint64_t sigset;
 	int count;
-} __attribute__((packed));
+};
 
 #endif
 

@@ -49,11 +49,9 @@ static void __attribute__((used)) container(void)
 		"mov r7, #175					\n" /* __NR_rt_sigprocmask */
 		"mov r0, %0					\n" /* @how */
 		"mov r1, r8					\n" /* @nset */
-		"add r2, r8, #8					\n" /* @oset */
-		"mov r9, r2					\n"
+		"mov r2, r8					\n" /* @oset */
 		"mov r3, #8					\n" /* @sigsetsize */
 		"svc 0x0					\n"
-		"ldr r8, [r9]					\n"
 		"udf #16					\n" /* SIGTRAP */
 		".global sigprocmask_blob_size			\n"
 		"sigprocmask_blob_size:				\n"
