@@ -50,11 +50,9 @@ void __attribute__((used)) container(void)
 		"movq $14, %%rax				\n" /* __NR_rt_sigprocmask */
 		"movq %0, %%rdi					\n" /* @how */
 		"movq %%r15, %%rsi				\n" /* @nset */
-		"addq $8, %%r15					\n"
 		"movq %%r15, %%rdx				\n" /* @oset */
 		"movq $8, %%r10					\n" /* @sigsetsize */
 		"syscall					\n"
-		"movq (%%r15), %%r15				\n" /* *@oset */
 		"int $0x03					\n"
 		".global sigprocmask_blob_size			\n"
 		"sigprocmask_blob_size:				\n"

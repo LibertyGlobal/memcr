@@ -21,12 +21,13 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <errno.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <string.h>
+#include <inttypes.h>
 #include <assert.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -47,6 +48,14 @@
 #include "arch/cpu.h"
 #include "arch/enter.h"
 #include "parasite-blob.h"
+
+#ifndef __SIZEOF_LONG__
+#error __SIZEOF_LONG__ undefined
+#endif
+
+#if __SIZEOF_LONG__ != 4 && __SIZEOF_LONG__ != 8
+#error unhandled __SIZEOF_LONG__ value
+#endif
 
 #define NT_PRSTATUS 1
 
@@ -71,6 +80,8 @@
 #define FLAG_HEAP	0x2		/* heap */
 #define FLAG_ANON 	0x3		/* anonymous mapping */
 #define FLAG_FILE	0x4		/* file mapped area */
+
+#define DEBUG_SIGSET	0
 
 struct vm_area {
 	unsigned long start;
@@ -1251,10 +1262,54 @@ static int setup_parasite_args(pid_t pid, void *base)
 	return 0;
 }
 
+static int sigset_peek(pid_t pid, unsigned long *addr, uint64_t *sigset)
+{
+	unsigned long tmp;
+
+	errno = 0;
+	tmp = ptrace(PTRACE_PEEKDATA, pid, addr + 0, NULL);
+	if (errno)
+		goto err;
+	*sigset = tmp;
+#if __SIZEOF_LONG__ == 4
+	tmp = ptrace(PTRACE_PEEKDATA, pid, addr + 1, NULL);
+	if (errno)
+		goto err;
+	*sigset |= (uint64_t)tmp << 32;
+#endif
+	return 0;
+
+err:
+	fprintf(stderr, "[-] %s(): peek data failed: %m", __func__);
+	return -1;
+}
+
+static int sigset_poke(pid_t pid, unsigned long *addr, uint64_t sigset)
+{
+	int ret;
+	unsigned long *ptr = (unsigned long *)&sigset;
+
+	ret = ptrace(PTRACE_POKEDATA, pid, addr + 0, *(ptr + 0));
+	if (ret)
+		goto err;
+#if __SIZEOF_LONG__ == 4
+	ret = ptrace(PTRACE_POKEDATA, pid, addr + 1, *(ptr + 1));
+	if (ret)
+		goto err;
+#endif
+	return 0;
+
+err:
+	fprintf(stderr, "[-] %s(): poke data failed: %m\n", __func__);
+	return ret;
+}
+
 static int execute_parasite_checkpoint(pid_t pid)
 {
 	struct registers regs;
 	unsigned long arg0, ret;
+	uint64_t sigset_new;
+	uint64_t sigset_old;
 	pid_t parasite;
 	int i, status;
 	struct vm_skip_addr paddr;
@@ -1308,24 +1363,17 @@ static int execute_parasite_checkpoint(pid_t pid)
 	execute_blob(pid, pc, test_blob, test_blob_size, NULL, NULL);
 #endif
 
-	/*
-	 * block all signals
-	 *
-	 * TODO: this code works correctly on x86_64 as kernel sigmask_t size is 8 bytes.
-	 * On ARM extra handling is needed to load and store these 8 bytes.
-	 * Upper half is occupied by RT signals so shouldn't matter during PoC
-	 * if we restore them correctly.
-	 */
+	/* block all signals */
 	printf("[+] blocking all signals\n");
-	for (i = 0; i < 8 / sizeof(unsigned long); i++) {
-		assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp-i, (void *)-1LU));
-	}
+	sigset_new = -1;
+	sigset_poke(pid, ctx.sp, sigset_new);
 	arg0 = (unsigned long)ctx.sp;
 	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
-#if 0
-	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
+	sigset_peek(pid, ctx.sp, &sigset_old);
+#if DEBUG_SIGSET
+	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
-	ctx.saved_sigmask = arg0;
+	ctx.sigset = sigset_old;
 	assert(!ret);
 
 	/* mmap space for parasite */
@@ -1387,6 +1435,10 @@ static int execute_parasite_restore(pid_t pid)
 {
 	unsigned long arg0, arg1, ret;
 	pid_t parasite = parasite_pid;
+	uint64_t sigset_new;
+#if DEBUG_SIGSET
+	uint64_t sigset_old;
+#endif
 	int i, status;
 
 	cmd_restore(pid);
@@ -1414,13 +1466,15 @@ static int execute_parasite_restore(pid_t pid)
 		assert(!ret);
 	}
 
-	/* restore the original sigmask */
+	/* restore the original sigset */
 	printf("[+] unblocking signals\n");
-	assert(!ptrace(PTRACE_POKEDATA, pid, ctx.sp, (void *)ctx.saved_sigmask));
+	sigset_new = ctx.sigset;
+	sigset_poke(pid, ctx.sp, sigset_new);
 	arg0 = (unsigned long)ctx.sp;
 	ret = execute_blob(pid, ctx.pc, sigprocmask_blob, sigprocmask_blob_size, &arg0, NULL);
-#if 0
-	printf(" = %#lx, prev_sigmask %#lx\n", ret, arg0);
+#if DEBUG_SIGSET
+	sigset_peek(pid, ctx.sp, &sigset_old);
+	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
 	assert(!ret);
 
