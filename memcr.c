@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -108,6 +109,11 @@ static struct target_context ctx;
 
 static int interrupted;
 
+static pthread_mutex_t parasite_status_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t parasite_status_cond = PTHREAD_COND_INITIALIZER;
+static unsigned long parasite_status;
+static unsigned long parasite_status_changed;
+
 /*
  * man sigaction: For a ptrace(2) event, si_code will contain SIG‐TRAP and have the ptrace event in the high byte:
  * (SIGTRAP | PTRACE_EVENT_foo << 8).
@@ -118,6 +124,64 @@ static int interrupted;
 #define PID_INVALID		0
 static pid_t checkpointed_pids[CHECKPOINTED_PIDS_LIMIT];
 static pid_t checkpoint_workers[CHECKPOINTED_PIDS_LIMIT];
+
+static void parasite_status_signal(pid_t pid, int status)
+{
+	pthread_mutex_lock(&parasite_status_lock);
+	parasite_status = status;
+	parasite_status_changed = 1;
+	pthread_cond_signal(&parasite_status_cond);
+	pthread_mutex_unlock(&parasite_status_lock);
+
+	if (WIFEXITED(status))
+		; /* normal exit */
+	else if (WIFSIGNALED(status))
+		if (WTERMSIG(status) == SIGKILL)
+			printf("[-] parasite killed by SIGKILL\n");
+		else
+			printf("[i] parasite terminated by signal %d%s\n", WTERMSIG(status), WCOREDUMP(status) ? " (code dumped)" : " ");
+	else
+		printf("[-] unhandled prasite status %x\n", status);
+}
+
+static int parasite_status_wait(int *status)
+{
+	int ret = 0;
+	struct timespec ts;
+
+	while (1) {
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_sec += 1;
+
+		pthread_mutex_lock(&parasite_status_lock);
+		while (!parasite_status_changed && ret == 0)
+			ret = pthread_cond_timedwait(&parasite_status_cond, &parasite_status_lock, &ts);
+		if (!ret)
+			*status = parasite_status;
+		pthread_mutex_unlock(&parasite_status_lock);
+
+		if (ret != ETIMEDOUT)
+			break;
+
+		fprintf(stdout, "[i] waiting for parasite status change\n");
+	}
+
+	if (ret)
+		fprintf(stdout, "[-] parasite status cond timedwait failed: %s\n", strerror(ret));
+
+	return ret;
+}
+
+static int parasite_status_ok(void)
+{
+	int ret;
+
+	pthread_mutex_lock(&parasite_status_lock);
+	ret = !parasite_status_changed;
+	pthread_mutex_unlock(&parasite_status_lock);
+
+	return ret;
+}
 
 static int is_pid_checkpointed(pid_t pid)
 {
@@ -297,16 +361,9 @@ static int seize_target(pid_t pid)
 	return 0;
 }
 
-static int unseize_pid(int pid)
+static int unseize_pid(pid_t pid)
 {
-	int ret;
-
-	ret = ptrace(PTRACE_DETACH, pid, NULL, 0);
-	if (ret < 0) {
-		fprintf(stderr, "ptrace(PTRACE_DETACH) failed: %m\n");
-	}
-
-	return ret;
+	return ptrace(PTRACE_DETACH, pid, NULL, 0);
 }
 
 static int unseize_target(void)
@@ -340,7 +397,7 @@ static int xconnect(int pid)
 	int ret;
 	int cnt = 0;
 
-	cd = socket(PF_UNIX, SOCK_STREAM, 0);
+	cd = socket(PF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (cd < 0) {
 		fprintf(stderr, "socket() failed: %m\n");
 		return -1;
@@ -384,7 +441,15 @@ static int xread(int fd, void *buf, int size)
 			break;
 
 		if (ret < 0) {
-			fprintf(stderr, "\n%s() failed: errno %m\n", __func__);
+			if (errno == EAGAIN) {
+				if (parasite_status_ok())
+					continue;
+
+				fprintf(stderr, "[-] %s() parasite not ok\n", __func__);
+				break;
+			}
+
+			fprintf(stderr, "[-] %s() failed: %m\n", __func__);
 			break;
 		}
 
@@ -409,7 +474,15 @@ static int xwrite(int fd, void *buf, int size)
 	while (1) {
 		ret = write(fd, buf + off, size - off);
 		if (ret < 0) {
-			fprintf(stderr, "\n%s() failed: errno %m\n", __func__);
+			if (errno == EAGAIN) {
+				if (parasite_status_ok())
+					continue;
+
+				fprintf(stderr, "[-] %s() parasite not ok\n", __func__);
+				break;
+			}
+
+			fprintf(stderr, "[-] %s() failed: %m\n", __func__);
 			break;
 		}
 
@@ -461,17 +534,13 @@ static int target_cmd_get_tid(int pid, pid_t *tid)
 	if (cd < 0)
 		return -1;
 
-	ret = write(cd, &(char){CMD_GET_TID}, 1);
-	if (ret != 1) {
-		fprintf(stderr, "%s() write cmd failed: ret %d, errno %m\n", __func__, ret);
+	ret = xwrite(cd, &(char){CMD_GET_TID}, 1);
+	if (ret != 1)
 		return -1;
-	}
 
 	ret = xread(cd, tid, sizeof(pid_t));
-	if (ret != sizeof(pid_t)) {
-		fprintf(stderr, "%s() read tid failed: ret %d, errno %m\n", __func__, ret);
+	if (ret != sizeof(pid_t))
 		return -1;
-	}
 
 	close(cd);
 	return 0;
@@ -507,11 +576,9 @@ static int target_cmd_get_skip_addr(int pid)
 	if (cd < 0)
 		return cd;
 
-	ret = write(cd, &(char){CMD_GET_SKIP_ADDR}, 1);
-	if (ret != 1) {
-		fprintf(stderr, "%s() write cmd failed: ret %d, errno %m\n", __func__, ret);
+	ret = xwrite(cd, &(char){CMD_GET_SKIP_ADDR}, 1);
+	if (ret != 1)
 		return -1;
-	}
 
 	while (1) {
 		struct vm_skip_addr addr;
@@ -947,7 +1014,7 @@ static int target_set_pages(pid_t pid)
 
 	fd = open(name, O_RDONLY);
 	if (fd < 0) {
-		fprintf(stderr, "%s() open failed with: %m\n", __func__);
+		fprintf(stderr, "[-] %s() open failed with: %m\n", __func__);
 		return -1;
 	}
 
@@ -1032,7 +1099,7 @@ static int cmd_checkpoint(pid_t pid)
 
 	ret = target_cmd_get_tid(pid, &tpid);
 	if (ret == -1) {
-		fprintf(stderr, "CMD_GET_TID failed\n");
+		fprintf(stderr, "[-] GET_TID failed\n");
 		return ret;
 	}
 
@@ -1044,13 +1111,13 @@ static int cmd_checkpoint(pid_t pid)
 
 	ret = target_cmd_get_skip_addr(pid);
 	if (ret) {
-		fprintf(stderr, "GET ADDR failed: ret %d\n", ret);
+		fprintf(stderr, "[-] GET_SKIP_ADDR failed: ret %d\n", ret);
 		return 1;
 	}
 
 	ret = scan_target_vmas(pid, vmas, &nr_vmas);
 	if (ret) {
-		fprintf(stderr, "scan_target_vmas() failed: ret %d\n", ret);
+		fprintf(stderr, "[-] scan_target_vmas() failed: ret %d\n", ret);
 		return 1;
 	}
 
@@ -1081,6 +1148,13 @@ static int cmd_checkpoint(pid_t pid)
 static int cmd_restore(pid_t pid)
 {
 	struct timespec ts;
+
+	if (!parasite_status_ok()) {
+		if (socket_dir)
+			cleanup_socket(pid);
+
+		return 1;
+	}
 
 	fprintf(stdout, "[+] uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1197,27 +1271,31 @@ retry:
 		 * So, regardless of signo, we can simply retry after
 		 * control returns to jboctl trap.
 		 *
-		 * Note that if signal is delivered between syscall and
+		 * Note that if signal is delivered between syscall and the
 		 * trapping instruction in the blob, the syscall might be
 		 * executed again. Block signals first before doing any
 		 * operation with side effects.
 		 */
 	retry_signal:
-		printf("[i] delivering user signal %d si_code %d\n", si.si_signo, si.si_code);
+		printf("[i] delivering signal %d si_code %d\n", si.si_signo, si.si_code);
 
 		write_cpu_regs(ctx->pid, &saved_regs);
 
 		assert(!ptrace(PTRACE_INTERRUPT, ctx->pid, NULL, NULL));
-		assert(!ptrace(PTRACE_CONT, ctx->pid, NULL,
-			       (void *)(unsigned long)si.si_signo));
+		assert(!ptrace(PTRACE_CONT, ctx->pid, NULL, (void *)(unsigned long)si.si_signo));
 
 		/* wait for trap */
 		assert(wait4(ctx->pid, &status, __WALL, NULL) == ctx->pid);
+		if (WIFSIGNALED(status)) {
+			fprintf(stderr, "[-] target pid %d terminated by signal %d%s\n", ctx->pid, WTERMSIG(status), WCOREDUMP(status) ? " (core dumped)" : " ");
+			return -1;
+		}
+
 		assert(WIFSTOPPED(status));
 		assert(!ptrace(PTRACE_GETSIGINFO, ctx->pid, NULL, &si));
 
 		/* are we back at jobctl trap or are there more signals? */
-		if (si.si_code >> 8 != PTRACE_EVENT_STOP)
+		if (SI_EVENT(si.si_code) != PTRACE_EVENT_STOP)
 			goto retry_signal;
 
 		/* restore stack */
@@ -1228,7 +1306,7 @@ retry:
 	}
 
 	/*
-	 * Okay, this is the SIGTRAP delivery from int 3 / udf 16 / brk 0. Steer the thread
+	 * Okay, this is the SIGTRAP delivery from the trapping instruction. Steer the thread
 	 * back to jobctl trap by raising INTERRUPT and squashing SIGTRAP.
 	 */
 	assert(!ptrace(PTRACE_INTERRUPT, ctx->pid, NULL, NULL));
@@ -1272,14 +1350,51 @@ static int setup_parasite_args(pid_t pid, void *base)
 	return poke(pid, dst, src, sizeof(pa));
 }
 
+
+void *parasite_watch_thread(void *ptr)
+{
+	int ret;
+	unsigned long pid = (unsigned long)ptr;
+	int status;
+
+	ret = ptrace(PTRACE_SEIZE, pid, NULL, 0);
+	if (ret) {
+		fprintf(stderr, "[-] seize of %ld failed: %m\n", pid);
+		/* TODO */
+		return NULL;
+	}
+
+	printf("[+] watching parasite %ld\n", pid);
+
+	ret = wait4(pid, &status, __WALL, NULL);
+	if (ret != pid) {
+		fprintf(stderr, "[-] wait4() ret %d != parasite %ld, errno %m\n", ret, pid);
+		assert(ret == pid);
+	}
+
+	parasite_status_signal(pid, status);
+
+	return NULL;
+}
+
+int parasite_watch(pid_t pid)
+{
+	int ret;
+	pthread_t id;
+
+	ret = pthread_create(&id, NULL, parasite_watch_thread, (void *)(unsigned long)pid);
+	if (ret)
+		printf("[-] pthread_create() failed: %s\n", strerror(ret));
+
+	return ret;
+}
+
 static int execute_parasite_checkpoint(pid_t pid)
 {
 	unsigned long ret;
 	struct registers regs;
 	uint64_t sigset_new;
 	uint64_t sigset_old;
-	pid_t parasite;
-	int status;
 	struct vm_skip_addr paddr;
 
 	read_cpu_regs(pid, &regs);
@@ -1359,26 +1474,16 @@ static int execute_parasite_checkpoint(pid_t pid)
 #if 0
 	printf("executing clone blob\n");
 #endif
-	parasite = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);
+	ret = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);
 #if 0
-	printf(" = %d\n", parasite);
+	printf(" = %d\n", ret);
 #endif
-	assert(parasite >= 0);
+	assert(ret > 0);
 
 	/* translate lxc ns pid to global one */
 	iterate_pstree(pid, 0, MAX_THREADS, update_parasite_pid);
 
-	parasite = parasite_pid;
-
-	/* let the parasite run and wait for completion */
-	ret = wait4(parasite, &status, __WALL, NULL);
-	if (ret != parasite) {
-		fprintf(stderr, "[-] wait4 ret %ld != parasite %d, errno %m\n", ret, parasite);
-		assert(ret == parasite);
-	}
-	assert(WIFSTOPPED(status));
-	printf("[+] executing parasite\n");
-	assert(!ptrace(PTRACE_CONT, parasite, NULL, NULL));
+	parasite_watch(parasite_pid);
 
 	cmd_checkpoint(pid);
 
@@ -1388,26 +1493,21 @@ static int execute_parasite_checkpoint(pid_t pid)
 static int execute_parasite_restore(pid_t pid)
 {
 	unsigned long ret;
-	pid_t parasite = parasite_pid;
+	int status;
 	uint64_t sigset_new;
 #if DEBUG_SIGSET
 	uint64_t sigset_old;
 #endif
-	int status;
 
 	cmd_restore(pid);
 
-	/* wait for termination */
-	assert(wait4(parasite, &status, __WALL, NULL) == parasite);
-	assert(!ptrace(PTRACE_CONT, parasite, NULL, NULL));
-	assert(wait4(parasite, &status, __WALL, NULL) == parasite);
-	if (WIFEXITED(status)) {
-#if 0
-		fprintf(stdout, "WIFEXITED(status) = 0x%x\n", WIFEXITED(status));
-#endif
-		assert(WIFEXITED(status));
-	}
+	parasite_status_wait(&status);
 
+	/* parasite was terminated by a signal */
+	if (WIFSIGNALED(status))
+		return 1;
+
+	assert(WIFEXITED(status) == 1);
 	/* parasite is done, munmap parasite_blob area */
 #if 0
 	printf("executing munmap blob\n");
@@ -1423,11 +1523,12 @@ static int execute_parasite_restore(pid_t pid)
 	sigset_new = ctx.sigset;
 	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
+	if (ret)
+		return ret;
 #if DEBUG_SIGSET
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
-	assert(!ret);
 
 	/* restore the original code and stack area */
 	poke(pid, ctx.pc, ctx.code, ctx.code_size);
@@ -1828,7 +1929,7 @@ static int user_interactive_mode(pid_t pid)
 		long h, m, s, ms;
 		struct timespec ts;
 
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--");
+		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--\n");
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		fgetc(stdin);
 		dms = diff_ms(&ts);
@@ -1864,13 +1965,13 @@ static void usage(const char *name, int status)
 
 void die(const char *fmt, ...)
 {
-        va_list ap;
+	va_list ap;
 
-        va_start(ap, fmt);
-        vfprintf(stderr, fmt, ap);
-        va_end(ap);
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	va_end(ap);
 
-        exit(1);
+	exit(1);
 }
 
 int main(int argc, char *argv[])
@@ -1930,15 +2031,11 @@ int main(int argc, char *argv[])
 
 	register_signal_handlers();
 
-	if (listen_port) {
+	if (listen_port)
 		ret = service_mode(listen_port);
-	} else {
+	else
 		ret = user_interactive_mode(pid);
-	}
 
-	if (ret)
-		return ret;
-
-	return interrupted ? 1 : 0;
+	return ret;
 }
 
