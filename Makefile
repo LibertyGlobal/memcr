@@ -31,6 +31,8 @@ MCFLAGS = $(CFLAGS) -g
 # parasite CFLAGS
 PCFLAGS = $(CFLAGS)
 
+LDFLAGS = -lpthread
+
 ifeq ("$(origin O)", "command line")
     GCC_O = $(O)
 endif
@@ -115,7 +117,7 @@ $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
 	$(CC) $(MCFLAGS) -I$(B) -c $< -o $@
 
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
-	$(CC) $(MCFLAGS) $^ -o $@
+	$(CC) $(MCFLAGS) $^ $(LDFLAGS) -o $@
 
 $(B)/memcr-client.o: memcr-client.c
 	$(CC) $(CFLAGS) -I$(B) -c $< -o $@

@@ -100,7 +100,7 @@ static void __attribute__((used)) container(void)
 		".global clone_blob_size			\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
-		:: "i" (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM | CLONE_PTRACE)
+		:: "i" (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM)
 	);
 
 	/* munmap anon area for parasite_blob, expects addr in x10 and len in x11 */

@@ -93,7 +93,7 @@ static void __attribute__((used)) container(void)
 		"bxeq r8					\n" /* bx parasite */
 		"udf #16					\n" /* SIGTRAP */
 		"CLONE_FLAGS:					\n"
-		".word 0x80052f00				\n" /* (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM | CLONE_PTRACE) */
+		".word 0x80050f00				\n" /* (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM) */
 		".global clone_blob_size			\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
