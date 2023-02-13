@@ -904,7 +904,11 @@ static int get_vma_pages(int cd, pid_t pid, struct vm_area *vma, int pd)
 
 		if (map & (PME_PRESENT_IN_RAM | PME_PRESENT_IN_SWAP)) {
 			nrpages_dumpable++;
-			get_single_page(cd, (void *)vaddr, pd);
+			ret = get_single_page(cd, (void *)vaddr, pd);
+			if (ret) {
+				close(md);
+				return ret;
+			}
 		}
 	}
 
@@ -962,14 +966,16 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 
 	for (idx = 0; idx < nr_vmas; idx++) {
 		if (vmas[idx].flags & FLAG_ANON || vmas[idx].flags & FLAG_HEAP || vmas[idx].flags & FLAG_STACK) {
-			get_vma_pages(cd, pid, &vmas[idx], fd);
+			ret = get_vma_pages(cd, pid, &vmas[idx], fd);
+			if (ret)
+				break;
 		}
 	}
 
 out:
 	close(cd);
 	close(fd);
-	return 0;
+	return ret;
 }
 
 static void target_vmas_mprotect_off(int pid)
