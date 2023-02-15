@@ -2035,6 +2035,8 @@ int main(int argc, char *argv[])
 
 	register_signal_handlers();
 
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	if (listen_port)
 		ret = service_mode(listen_port);
 	else
