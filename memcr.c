@@ -78,6 +78,14 @@
 #define FLAG_ANON 	0x3		/* anonymous mapping */
 #define FLAG_FILE	0x4		/* file mapped area */
 
+static char *flag_desc[5] = {
+	[FLAG_NONE]	= "none",
+	[FLAG_STACK]	= "stck",
+	[FLAG_HEAP]	= "heap",
+	[FLAG_ANON]	= "anon",
+	[FLAG_FILE]	= "file",
+};
+
 #define DEBUG_SIGSET	0
 
 struct vm_area {
@@ -91,16 +99,26 @@ static char *dump_dir;
 static char *socket_dir;
 static int nowait;
 
-#define PATH_MAX        4096	/* # chars in a path name including nul */
-#define MAX_THREADS		1024
+#define BIT(x) (1ULL << x)
+
+#define PM_PAGE_FRAME_NUMBER_MASK	0x007fffffffffffff
+#define PM_PAGE_SWAPPED			62
+#define PM_PAGE_PRESENT			63
+
+#define KPF_UNEVICTABLE			18	/* (since Linux 2.6.31) */
+
+static int kpageflags_fd;
+
+#define PATH_MAX			4096
+#define MAX_THREADS			1024
 
 static pid_t tids[MAX_THREADS];
 static int nr_threads;
 
-#define MAX_SKIP_ADDR	1024
+#define MAX_SKIP_ADDR			1024
 static struct vm_skip_addr skip_addr[MAX_SKIP_ADDR];
 
-#define MAX_VMAS		4096
+#define MAX_VMAS			4096
 static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
@@ -814,9 +832,8 @@ static int open_proc(pid_t pid, char *file_name)
 
 	snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
 	fd = open(path, O_RDONLY);
-	if (fd == -1) {
-		fprintf(stderr, "fopen() %s failed: %m\n", path);
-	}
+	if (fd == -1)
+		fprintf(stderr, "open() %s failed: %m\n", path);
 
 	return fd;
 }
@@ -873,73 +890,76 @@ static int get_single_page(int cd, void *addr, int fd)
 	return 0;
 }
 
-#define PME_PRESENT_IN_RAM		(1ULL << 63)
-#define PME_PRESENT_IN_SWAP		(1ULL << 62)
-
-static int get_vma_pages(int cd, pid_t pid, struct vm_area *vma, int pd)
+static int page_unevictable(uint64_t pfn)
 {
 	int ret;
-	int md;
+	uint64_t flags;
+
+	ret = pread(kpageflags_fd, &flags, sizeof(uint64_t), pfn * sizeof(uint64_t));
+	if (ret != sizeof(uint64_t)) {
+		fprintf(stderr, "pread() failed: %m\n");
+		return 0;
+	}
+
+	if (flags & BIT(KPF_UNEVICTABLE))
+		return 1;
+
+	return 0;
+}
+
+static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
+{
+	int ret;
 	uint64_t off;
 	unsigned long nrpages;
-	unsigned long pfn;
+	unsigned long idx;
 	unsigned long nrpages_dumpable = 0;
+	unsigned long nrpages_unevictable = 0;
 
-	md = open_proc(pid, "pagemap");
-	if (md < 0)
-		return -EIO;
+	nrpages = (vma->end - vma->start) / PAGE_SIZE;
 
-	nrpages = ((vma->end - vma->start) / PAGE_SIZE);
-
-	pfn = vma->start / PAGE_SIZE;
-	off = pfn * sizeof(uint64_t);
-	off = lseek(md, off, SEEK_SET);
-	if (off != pfn * sizeof(uint64_t)) {
+	idx = vma->start / PAGE_SIZE;
+	off = idx * sizeof(uint64_t);
+	off = lseek(pd, off, SEEK_SET);
+	if (off != idx * sizeof(uint64_t)) {
 		fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
-		close(md);
 		return -1;
 	}
 
-	for (pfn = 0; pfn < nrpages; pfn++) {
+	for (idx = 0; idx < nrpages; idx++) {
 		uint64_t map;
-		unsigned long vaddr;
+		unsigned long addr;
 
-		vaddr = vma->start + pfn * PAGE_SIZE;
+		addr = vma->start + idx * PAGE_SIZE;
 
-		ret = read(md, &map, sizeof(map));
+		ret = read(pd, &map, sizeof(map));
 		if (ret != sizeof(map)) {
 			fprintf(stderr, "read() %m\n");
 			continue;
 		}
 
-		if (map & (PME_PRESENT_IN_RAM | PME_PRESENT_IN_SWAP)) {
+		if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
+			uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
+
 			nrpages_dumpable++;
-			ret = get_single_page(cd, (void *)vaddr, pd);
+
+			ret = page_unevictable(pfn);
 			if (ret) {
-				close(md);
-				return ret;
+				nrpages_unevictable++;
+				continue;
 			}
+
+			ret = get_single_page(cd, (void *)addr, fd);
+			if (ret)
+				return ret;
 		}
 	}
 
-	close(md);
-
 	if (nrpages_dumpable) {
-		char *desc;
-
-		if (vma->flags == FLAG_NONE) {
-			desc = "none";
-		} else if (vma->flags == FLAG_STACK) {
-			desc = "stck";
-		} else if (vma->flags == FLAG_HEAP) {
-			desc = "heap";
-		} else if (vma->flags == FLAG_ANON) {
-			desc = "anon";
-		} else if (vma->flags == FLAG_FILE) {
-			desc = "file";
-		}
-
-		fprintf(stdout, "[i]   %0*lx..%0*lx  %s %6ld kB\n", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, desc, (nrpages_dumpable * PAGE_SIZE) / 1024);
+		fprintf(stdout, "[i]   %0*lx..%0*lx  %s %6ld kB", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, flag_desc[vma->flags], (nrpages_dumpable * PAGE_SIZE) / 1024);
+		if (nrpages_unevictable)
+			fprintf(stdout, " (unevictable %ld kB)", (nrpages_unevictable * PAGE_SIZE) / 1024);
+		fprintf(stdout, "\n");
 	}
 
 	return 0;
@@ -947,15 +967,20 @@ static int get_vma_pages(int cd, pid_t pid, struct vm_area *vma, int pd)
 
 static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 {
-	int ret;
-	char name[128];
+	int ret = -1;
+	char path[PATH_MAX];
+	int pd = -1;
 	int fd = -1;
 	int cd = -1;
 	int idx;
 
-	snprintf(name, sizeof(name), "%s/pages-%d.img", dump_dir, pid);
+	pd = open_proc(pid, "pagemap");
+	if (pd < 0)
+		goto out;
 
-	fd = open(name, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
+	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
+
+	fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
 		fprintf(stderr, "%s() open failed with: %m\n", __func__);
 		return -1;
@@ -973,9 +998,11 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 		goto out;
 	}
 
+	ret = 0;
+
 	for (idx = 0; idx < nr_vmas; idx++) {
 		if (vmas[idx].flags & FLAG_ANON || vmas[idx].flags & FLAG_HEAP || vmas[idx].flags & FLAG_STACK) {
-			ret = get_vma_pages(cd, pid, &vmas[idx], fd);
+			ret = get_vma_pages(pd, cd, &vmas[idx], fd);
 			if (ret)
 				break;
 		}
@@ -984,6 +1011,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 out:
 	close(cd);
 	close(fd);
+	close(pd);
 	return ret;
 }
 
@@ -2039,6 +2067,18 @@ int main(int argc, char *argv[])
 	if (!pid && listen_port <= 0)
 		die("listen port must be > 0\n");
 
+	ret = access("/proc/self/pagemap", F_OK);
+	if (ret)
+		die("/proc/self/pagemap not present (depends on CONFIG_PROC_PAGE_MONITOR)\n");
+
+	ret = access("/proc/kpageflags", F_OK);
+	if (ret)
+		die("/proc/kpageflags not present (depends on CONFIG_PROC_PAGE_MONITOR)\n");
+
+	kpageflags_fd = open("/proc/kpageflags", O_RDONLY);
+	if (kpageflags_fd == -1)
+		die("/proc/kpageflags: %m\n");
+
 	register_signal_handlers();
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -2047,6 +2087,8 @@ int main(int argc, char *argv[])
 		ret = service_mode(listen_port);
 	else
 		ret = user_interactive_mode(pid);
+
+	close(kpageflags_fd);
 
 	return ret;
 }
