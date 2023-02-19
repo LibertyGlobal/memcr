@@ -390,7 +390,7 @@ static inline void create_abstract_socketname(char * addr, int addr_size, int pi
 	snprintf(addr, addr_size, "#memcr%u", pid);
 }
 
-static int xconnect(int pid)
+static int parasite_connect(int pid)
 {
 	int cd;
 	struct sockaddr_un addr = { 0 };
@@ -422,30 +422,30 @@ retry:
 		} else {
 			fprintf(stderr, "connect() to %s failed: %m\n", addr.sun_path + 1);
 			close(cd);
+			return -1;
 		}
 	}
 
 	return cd;
 }
 
-static int xread(int fd, void *buf, int size)
+static int __read(int fd, void *buf, size_t count, int (*check_peer_ok)(void))
 {
 	int ret;
 	int off = 0;
 
-	assert(size != 0);
+	assert(count != 0);
 
 	while (1) {
-		ret = read(fd, buf + off, size - off);
+		ret = read(fd, buf + off, count - off);
 		if (ret == 0)
 			break;
 
 		if (ret < 0) {
-			if (errno == EAGAIN) {
-				if (parasite_status_ok())
+			if (errno == EAGAIN && check_peer_ok) {
+				if (check_peer_ok())
 					continue;
 
-				fprintf(stderr, "[-] %s() parasite not ok\n", __func__);
 				break;
 			}
 
@@ -453,48 +453,64 @@ static int xread(int fd, void *buf, int size)
 			break;
 		}
 
-		if (ret < size - off) {
+		if (ret < count - off) {
 			off += ret;
 			continue;
 		}
 
-		return size;
+		return count;
 	}
 
 	return ret;
 }
 
-static int xwrite(int fd, void *buf, int size)
+static int __write(int fd, const void *buf, size_t count, int (*check_peer_ok)(void))
 {
 	int ret;
 	int off = 0;
 
-	assert(size != 0);
+	assert(count != 0);
 
 	while (1) {
-		ret = write(fd, buf + off, size - off);
+		ret = write(fd, buf + off, count - off);
 		if (ret < 0) {
-			if (errno == EAGAIN) {
-				if (parasite_status_ok())
+			if (errno == EAGAIN && check_peer_ok)
+				if (check_peer_ok())
 					continue;
-
-				fprintf(stderr, "[-] %s() parasite not ok\n", __func__);
-				break;
-			}
 
 			fprintf(stderr, "[-] %s() failed: %m\n", __func__);
 			break;
 		}
 
-		if (ret < size - off) {
+		if (ret < count - off) {
 			off += ret;
 			continue;
 		}
 
-		return size;
+		return count;
 	}
 
 	return ret;
+}
+
+static int parasite_read(int fd, void *buf, size_t count)
+{
+	return __read(fd, buf, count, parasite_status_ok);
+}
+
+static int parasite_write(int fd, const void *buf, size_t count)
+{
+	return __write(fd, buf, count, parasite_status_ok);
+}
+
+static int _read(int fd, void *buf, size_t count)
+{
+	return __read(fd, buf, count, NULL);
+}
+
+static int _write(int fd, const void *buf, size_t count)
+{
+	return __write(fd, buf, count, NULL);
 }
 
 static int setup_listen_socket(int port)
@@ -530,15 +546,15 @@ static int target_cmd_get_tid(int pid, pid_t *tid)
 
 	*tid = 0;
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0)
 		return -1;
 
-	ret = xwrite(cd, &(char){CMD_GET_TID}, 1);
+	ret = parasite_write(cd, &(char){CMD_GET_TID}, 1);
 	if (ret != 1)
 		return -1;
 
-	ret = xread(cd, tid, sizeof(pid_t));
+	ret = parasite_read(cd, tid, sizeof(pid_t));
 	if (ret != sizeof(pid_t))
 		return -1;
 
@@ -572,26 +588,29 @@ static int target_cmd_get_skip_addr(int pid)
 	int ret;
 	int cd;
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0)
 		return cd;
 
-	ret = xwrite(cd, &(char){CMD_GET_SKIP_ADDR}, 1);
-	if (ret != 1)
-		return -1;
+	ret = parasite_write(cd, &(char){CMD_GET_SKIP_ADDR}, 1);
+	if (ret != 1) {
+		ret = -1;
+		goto out;
+	}
 
 	while (1) {
 		struct vm_skip_addr addr;
 
-		ret = xread(cd, &addr, sizeof(addr));
+		ret = parasite_read(cd, &addr, sizeof(addr));
 		if (ret == 0)
 			break;
 
 		set_skip_addr(addr);
 	}
 
+out:
 	close(cd);
-	return 0;
+	return ret;
 }
 
 static FILE *fopen_proc(pid_t pid, char *file_name)
@@ -812,22 +831,19 @@ static int target_cmd_mprotect(int pid, void *addr, unsigned long len, unsigned 
 		.prot = prot,
 	};
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0)
 		return cd;
 
-	ret = write(cd, &(char){CMD_MPROTECT}, 1);
+	ret = parasite_write(cd, &(char){CMD_MPROTECT}, 1);
 	if (ret != 1) {
-		fprintf(stderr, "%s() write() cmd failed: ret %d, errno %m\n", __func__, ret);
 		ret = -1;
 		goto end;
 	}
 
-	ret = xwrite(cd, &mp, sizeof(mp));
-	if (ret != sizeof(mp)) {
-		fprintf(stderr, "%s() xwrite() mp failed: ret %d\n", __func__, ret);
+	ret = parasite_write(cd, &mp, sizeof(mp));
+	if (ret != sizeof(mp))
 		ret = -1;
-	}
 
 end:
 	close(cd);
@@ -842,23 +858,17 @@ static int get_single_page(int cd, void *addr, int fd)
 	};
 	struct vm_page page;
 
-	ret = xwrite(cd, &req, sizeof(req));
-	if (ret != sizeof(req)) {
-		fprintf(stderr, "%s() xwrite(req) failed: %d\n", __func__, ret);
+	ret = parasite_write(cd, &req, sizeof(req));
+	if (ret != sizeof(req))
 		return -1;
-	}
 
-	ret = xread(cd, &page, sizeof(page));
-	if (ret < 0) {
-		fprintf(stderr, "%s() xread(page) failed: %d\n", __func__, ret);
-		return -2;
-	}
+	ret = parasite_read(cd, &page, sizeof(page));
+	if (ret != sizeof(page))
+		return -1;
 
-	ret = xwrite(fd, &page, ret);
-	if (ret < 0) {
-		fprintf(stderr, "%s() xwrite(page) failed: %d\n", __func__, ret);
-		return -3;
-	}
+	ret = _write(fd, &page, sizeof(page));
+	if (ret != sizeof(page))
+		return -1;
 
 	return 0;
 }
@@ -939,8 +949,8 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 {
 	int ret;
 	char name[128];
-	int fd;
-	int cd;
+	int fd = -1;
+	int cd = -1;
 	int idx;
 
 	snprintf(name, sizeof(name), "%s/pages-%d.img", dump_dir, pid);
@@ -951,15 +961,14 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 		return -1;
 	}
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0) {
-		close(fd);
-		return cd;
+		ret = -1;
+		goto out;
 	}
 
-	ret = write(cd, &(char){CMD_GET_PAGES}, 1);
+	ret = parasite_write(cd, &(char){CMD_GET_PAGES}, 1);
 	if (ret != 1) {
-		fprintf(stderr, "%s() write cmd failed: ret %d, errno %m\n", __func__, ret);
 		ret = -1;
 		goto out;
 	}
@@ -1011,48 +1020,48 @@ static void target_vmas_mprotect_on(int pid)
 static int target_set_pages(pid_t pid)
 {
 	int ret;
-	int cd;
-	char cmd = CMD_SET_PAGES;
-	char name[128];
-	int fd;
+	char path[PATH_MAX];
+	int cd = -1;
+	int fd = -1;
 
-	snprintf(name, sizeof(name), "%s/pages-%d.img", dump_dir, pid);
+	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
-	fd = open(name, O_RDONLY);
+	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		fprintf(stderr, "[-] %s() open failed with: %m\n", __func__);
 		return -1;
 	}
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0) {
-		close(fd);
-		return cd;
+		ret = -1;
+		goto out;
 	}
 
-	ret = write(cd, &cmd, 1);
+	ret = parasite_write(cd, &(char){CMD_SET_PAGES}, 1);
 	if (ret != 1) {
-		fprintf(stderr, "%s() write cmd failed: ret %d, errno %m\n", __func__, ret);
-		return -1;
+		ret = -1;
+		goto out;
 	}
 
 	while (1) {
 		struct vm_page page;
 
-		ret = xread(fd, &page, sizeof(page));
+		ret = _read(fd, &page, sizeof(page));
 		if (ret == 0)
 			break;
 
-		ret = xwrite(cd, &page, ret);
-		if (ret < 0) {
-			fprintf(stderr, "%s() xwrite failed with: %m\n", __func__);
+		ret = parasite_write(cd, &page, sizeof(page));
+		if (ret != sizeof(page)) {
+			ret = -1;
 			break;
 		}
 	}
 
+out:
 	close(cd);
 	close(fd);
-	unlink(name);
+	unlink(path);
 	return ret;
 }
 
@@ -1060,21 +1069,14 @@ static int target_cmd_end(int pid)
 {
 	int ret;
 	int cd;
-	char cmd = CMD_END;
 
-	cd = xconnect(pid);
+	cd = parasite_connect(pid);
 	if (cd < 0)
-		return cd;
-
-	ret = write(cd, &cmd, 1);
-	if (ret != 1) {
-		fprintf(stderr, "%s() write cmd failed: ret %d, errno %m\n", __func__, ret);
 		return -1;
-	}
 
-	xread(cd, &cmd, sizeof(cmd));
-	if (cmd != CMD_END)
-		fprintf(stdout, "%s() unexpected response: %d\n", __func__, cmd);
+	ret = parasite_write(cd, &(char){CMD_END}, 1);
+	if (ret != 1)
+		ret = -1;
 
 	close(cd);
 	return ret;
@@ -1083,8 +1085,9 @@ static int target_cmd_end(int pid)
 static void cleanup_socket(int pid)
 {
 	char socketaddr[108];
+
 	create_filesystem_socketname(socketaddr, sizeof(socketaddr), pid);
-	remove(socketaddr);
+	unlink(socketaddr);
 }
 
 static long diff_ms(struct timespec *ts)
@@ -1580,9 +1583,9 @@ static int read_command(int cd, struct service_command * svc_cmd)
 {
 	int ret;
 
-	ret = xread(cd, svc_cmd, sizeof(struct service_command));
+	ret = _read(cd, svc_cmd, sizeof(struct service_command));
 	if (ret != sizeof(struct service_command)) {
-		fprintf(stderr, "%s(): ret %d, errno %m\n", __func__, ret);
+		fprintf(stderr, "[-] %s(): ret %d, errno %m\n", __func__, ret);
 		return -1;
 	}
 
@@ -1594,9 +1597,9 @@ static int send_response_to_client(int cd, memcr_svc_response resp_code)
 	struct service_response svc_resp = { .resp_code = resp_code };
 	int ret;
 
-	ret = xwrite(cd, &svc_resp, sizeof(svc_resp));
+	ret = _write(cd, &svc_resp, sizeof(svc_resp));
 	if (ret != sizeof(svc_resp)) {
-		fprintf(stderr, "%s(): Error sending response!\n", __func__);
+		fprintf(stderr, "[-] %s(): error sending response!\n", __func__);
 		return -1;
 	}
 
@@ -1605,13 +1608,13 @@ static int send_response_to_client(int cd, memcr_svc_response resp_code)
 
 static int send_response_to_service(int fd, int status)
 {
-	struct service_response svc_resp = { .resp_code = MEMCR_OK };
+	int ret;
+	struct service_response svc_resp;
 
-	if (status)
-		svc_resp.resp_code = MEMCR_ERROR;
+	svc_resp.resp_code = status ? MEMCR_ERROR : MEMCR_OK;
 
 	fprintf(stdout, "[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
-	int ret = xwrite(fd, &svc_resp, sizeof(struct service_response));
+	ret = _write(fd, &svc_resp, sizeof(struct service_response));
 	if (ret != sizeof(svc_resp))
 		return -1;
 
@@ -1621,6 +1624,7 @@ static int send_response_to_service(int fd, int status)
 static struct sockaddr_un make_restore_socket_address(pid_t pid)
 {
 	struct sockaddr_un addr_restore;
+
 	addr_restore.sun_family = PF_UNIX;
 	memset(addr_restore.sun_path, 0, sizeof(addr_restore.sun_path));
 	snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
@@ -1645,6 +1649,7 @@ static int setup_restore_socket_worker(pid_t pid)
 		fprintf(stderr, "%s() failed on socket bind.\n", __func__);
 		return ret;
 	}
+
 	ret = listen(rsd, 8);
 	if (ret < 0) {
 		fprintf(stderr, "%s() failed on socket listen.\n", __func__);
@@ -1671,6 +1676,7 @@ static int setup_restore_socket_service(pid_t pid)
 		close(rd);
 		return ret;
 	}
+
 	return rd;
 }
 
@@ -1761,7 +1767,7 @@ static void checkpoint_procedure_service(int checkpointSocket, int cd)
 	struct service_response svc_resp;
 
 	fprintf(stdout, "[+] Parent waiting for worker checkpoint...\n");
-	ret = xread(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
+	ret = _read(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
 	close(checkpointSocket);
 
 	if (ret == sizeof(svc_resp)) {
@@ -1784,18 +1790,18 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd)
 		ret = -1;
 	}
 
-	ret = xwrite(rd, &svc_cmd, sizeof(struct service_command)); // send restore to service
+	ret = _write(rd, &svc_cmd, sizeof(struct service_command)); // send restore to service
 	if (ret != sizeof(struct service_command)) {
-		fprintf(stderr, "%s() xwrite() svc_cmd failed: ret %d\n", __func__, ret);
+		fprintf(stderr, "[-] %s() write() svc_cmd failed: ret %d\n", __func__, ret);
 		ret = -1;
 	}
 
 	fprintf(stdout, "[+] Service waiting for worker to restore... \n");
-
-	ret = xread(rd, &svc_resp, sizeof(struct service_response));   // read response from service
+	ret = _read(rd, &svc_resp, sizeof(struct service_response));   // read response from service
 	close(rd);
+
 	if (ret != sizeof(struct service_response)) {
-		fprintf(stderr, "%s() xread() svc_resp failed: ret %d\n", __func__, ret);
+		fprintf(stderr, "[-] %s() read() svc_resp failed: ret %d\n", __func__, ret);
 		ret = -1;
 	}
 

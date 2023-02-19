@@ -327,7 +327,8 @@ static int cmd_set_pages(int cd)
 static int cmd_end(int cd)
 {
 	finish = 1;
-	return sys_write(cd, &(char){CMD_END}, 1);
+
+	return 0;
 }
 
 static int handle_connection(int cd)
