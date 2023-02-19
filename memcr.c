@@ -1426,19 +1426,56 @@ int parasite_watch(pid_t pid)
 	return ret;
 }
 
-static int execute_parasite_checkpoint(pid_t pid)
+static int signals_block(pid_t pid)
 {
-	unsigned long ret;
-	struct registers regs;
+	long ret;
 	uint64_t sigset_new;
 	uint64_t sigset_old;
-	struct vm_skip_addr paddr;
 
-	read_cpu_regs(pid, &regs);
+	assert(pid == ctx.pid);
 
-#if 0
-	print_cpu_regs(&regs);
+	printf("[+] blocking signals\n");
+	sigset_new = -1;
+	poke(ctx.pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
+	peek(ctx.pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
+#if DEBUG_SIGSET
+	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
+	ctx.sigset = sigset_old;
+	assert(!ret);
+
+	return ret;
+}
+
+static int signals_unblock(pid_t pid)
+{
+	long ret;
+	uint64_t sigset_new;
+#if DEBUG_SIGSET
+	uint64_t sigset_old;
+#endif
+
+	assert(pid == ctx.pid);
+
+	printf("[+] unblocking signals\n");
+	sigset_new = ctx.sigset;
+	poke(ctx.pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
+	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
+	if (ret)
+		return ret;
+#if DEBUG_SIGSET
+	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
+	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
+#endif
+
+	return 0;
+}
+
+static int ctx_save(pid_t pid)
+{
+	struct registers regs;
+
 	ctx.pid = pid;
 
 	/* allocate space to save original code */
@@ -1452,49 +1489,56 @@ static int execute_parasite_checkpoint(pid_t pid)
 	ctx.code = malloc(sizeof(unsigned long) * ctx.code_size);
 	assert(ctx.code);
 
-	/*
-	 * The page %rip is on gotta be executable.  If we inject from the
-	 * beginning of the page, there should be at least one page of
-	 * space.  Determine the position and save the original code.
-	 */
-	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
-	peek(pid, ctx.pc, ctx.code, ctx.code_size);
+	read_cpu_regs(ctx.pid, &regs);
 
 	/*
-	 * Save and restore some bytes below %rsp so that blobs can use it
-	 * as writeable scratch area.  This wouldn't be necessary if mmap
+	 * The page %ip is on gotta be executable. If we inject from the
+	 * beginning of the page, there should be at least one page of
+	 * space. Determine the position and save the original code.
+	 */
+	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
+	peek(ctx.pid, ctx.pc, ctx.code, ctx.code_size);
+
+	/*
+	 * Save and restore some bytes below %sp so that blobs can use it
+	 * as writeable scratch area. This wouldn't be necessary if mmap
 	 * is done earlier.
 	 */
 	ctx.sp = get_cpu_regs_sp(&regs) - sizeof(ctx.stack);
-	peek(pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
+	peek(ctx.pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
 
-#if 0
-	/* say hi! */
-	printf("executing test blob\n");
-	execute_blob(pid, pc, test_blob, test_blob_size, NULL, NULL);
-#endif
+	return 0;
+}
 
-	/* block all signals */
-	printf("[+] blocking all signals\n");
-	sigset_new = -1;
-	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
-	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
-	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
-#if DEBUG_SIGSET
-	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
-#endif
-	ctx.sigset = sigset_old;
-	assert(!ret);
+static int ctx_restore(pid_t pid)
+{
+	assert(pid == ctx.pid);
+
+	/* restore the original code and stack area */
+	poke(ctx.pid, ctx.pc, ctx.code, ctx.code_size);
+	poke(ctx.pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
+	free(ctx.code);
+
+	return 0;
+}
+
+static int execute_parasite_checkpoint(pid_t pid)
+{
+	unsigned long ret;
+	struct vm_skip_addr paddr;
+
+	ctx_save(pid);
+
+	signals_block(pid);
 
 	/* mmap space for parasite */
-#if 0
-	printf("executing mmap blob\n");
-#endif
 	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, sizeof(parasite_blob), 0);
-#if 0
-	printf(" = %#lx\n", ret);
-#endif
-	assert(ret < -4096LU);
+	if (ret >= -4096LU) {
+		fprintf(stdout, "[-] mmap failed: %lx\n", ret);
+		signals_unblock(pid);
+		ctx_restore(pid);
+		return -1;
+	}
 
 	/* copy parasite_blob into the mmapped area */
 	ctx.blob = (void *)ret;
@@ -1508,9 +1552,6 @@ static int execute_parasite_checkpoint(pid_t pid)
 	set_skip_addr(paddr);
 
 	/* clone parasite which will trap and wait for instruction */
-#if 0
-	printf("executing clone blob\n");
-#endif
 	ret = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);
 #if 0
 	printf(" = %d\n", ret);
@@ -1531,10 +1572,6 @@ static int execute_parasite_restore(pid_t pid)
 {
 	unsigned long ret;
 	int status;
-	uint64_t sigset_new;
-#if DEBUG_SIGSET
-	uint64_t sigset_old;
-#endif
 
 	cmd_restore(pid);
 
@@ -1545,32 +1582,15 @@ static int execute_parasite_restore(pid_t pid)
 		return 1;
 
 	assert(WIFEXITED(status) == 1);
+
 	/* parasite is done, munmap parasite_blob area */
-#if 0
-	printf("executing munmap blob\n");
-#endif
 	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, (unsigned long)ctx.blob, sizeof(parasite_blob));
-	if (ret) {
-		fprintf(stderr, "[-] munmap_blob failed: %ld\n", ret);
-		assert(!ret);
-	}
-
-	/* restore the original sigset */
-	printf("[+] unblocking signals\n");
-	sigset_new = ctx.sigset;
-	poke(pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
-	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
 	if (ret)
-		return ret;
-#if DEBUG_SIGSET
-	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
-	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
-#endif
+		fprintf(stderr, "[-] munmap failed: %ld\n", ret);
 
-	/* restore the original code and stack area */
-	poke(pid, ctx.pc, ctx.code, ctx.code_size);
-	poke(pid, ctx.sp, ctx.stack, sizeof(ctx.stack));
-	free(ctx.code);
+	signals_unblock(pid);
+
+	ctx_restore(pid);
 
 	return 0;
 }
@@ -1719,6 +1739,7 @@ static int checkpoint_worker(pid_t pid)
 	ret = execute_parasite_checkpoint(pid);
 	if (ret) {
 		fprintf(stderr, "[%d] Parasite checkpoint failed!\n", getpid());
+		unseize_target();
 		return ret;
 	}
 
@@ -1742,10 +1763,9 @@ static int restore_worker(int rd)
 
 	signal(SIGCHLD, SIG_DFL);
 	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
-	if (ret)
-		return ret;
 
-	ret = unseize_target();
+	unseize_target();
+
 	return ret;
 }
 
@@ -1960,7 +1980,9 @@ static int user_interactive_mode(pid_t pid)
 	if (ret)
 		return ret;
 
-	execute_parasite_checkpoint(pid);
+	ret = execute_parasite_checkpoint(pid);
+	if (ret)
+		goto out;
 
 	if (!nowait) {
 		long dms;
@@ -1978,9 +2000,10 @@ static int user_interactive_mode(pid_t pid)
 		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
 	}
 
-	execute_parasite_restore(pid);
+	ret = execute_parasite_restore(pid);
 
-	ret = unseize_target();
+out:
+	unseize_target();
 
 	return ret;
 }
