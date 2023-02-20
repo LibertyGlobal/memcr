@@ -533,28 +533,35 @@ static int _write(int fd, const void *buf, size_t count)
 
 static int setup_listen_socket(int port)
 {
-	int srvd, ret;
-	struct sockaddr_in addr;
+	int ret;
+	int sd;
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_ANY),
+		.sin_port = htons(port),
+	};
 
-	srvd = socket(AF_INET, SOCK_STREAM, 0);
-	if (srvd < 0) {
-		return srvd;
-	}
+	sd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sd < 0)
+		return sd;
 
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	addr.sin_port = htons(port);
+	ret = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
+	if (ret)
+		goto err;
 
-	ret = bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
-	if (ret) {
-		return ret;
-	}
-	ret = listen(srvd, 8);
-	if (ret < 0) {
-		return ret;
-	}
+	ret = bind(sd, (struct sockaddr *)&addr, sizeof(addr));
+	if (ret)
+		goto err;
 
-	return srvd;
+	ret = listen(sd, 8);
+	if (ret)
+		goto err;
+
+	return sd;
+
+err:
+	close(sd);
+	return -1;
 }
 
 static int target_cmd_get_tid(int pid, pid_t *tid)
