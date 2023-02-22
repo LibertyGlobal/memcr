@@ -74,6 +74,7 @@ struct vm_mprotect {
 
 struct vm_page_addr {
 	void *addr;
+	char tx_page;
 } __attribute__((packed));
 
 struct vm_page {
