@@ -27,7 +27,7 @@
 
 #include "arch/syscall.h"
 
-#define VERBOSE 0
+#define VERBOSE 1
 
 #define __stringify_1(x...)	#x
 #define __stringify(x...)	__stringify_1(x)
@@ -39,12 +39,19 @@
 static int bss;
 static int finish;
 
-#if defined(VERBOSE)
+#if VERBOSE == 1
 static char *long_to_str(long v)
 {
-	static char buf[64];
-	char *p = &buf[64];
+	static char buf[sizeof(unsigned long) * 3];
+	char *p = buf + sizeof(buf) - 1;
 	int minus = 0;
+
+	*p = '\0';
+
+	if (v == 0) {
+		*--p = '0';
+		return p;
+	}
 
 	if (v < 0) {
 		minus = 1;
@@ -55,6 +62,7 @@ static char *long_to_str(long v)
 		*--p = '0' + (v % 10);
 		v /= 10;
 	}
+
 	if (minus)
 		*--p = '-';
 
@@ -63,9 +71,16 @@ static char *long_to_str(long v)
 
 static char *ulong_to_hstr(unsigned long v)
 {
-	static char buf[64];
-	char *p = &buf[64];
+	static char buf[sizeof(unsigned long) * 3];
+	char *p = buf + sizeof(buf) - 1;
 	unsigned char x;
+
+	*p = '\0';
+
+	if (v == 0) {
+		*--p = '0';
+		return p;
+	}
 
 	while (v) {
 		x = v % 16;
@@ -106,9 +121,9 @@ static void print_msg(int fd, const char *msg)
 } while (0);
 #else /* VERBOSE*/
 
-#define print_msg() {}
+#define print_msg(fd, msg) {}
 #define __DEBUG__
-#define print_err() {}
+#define print_err(fd, txt, ret) {}
 #define die(txt, ret) { \
 	*((int *)NULL) = 1; \
 }
@@ -230,24 +245,24 @@ static int cmd_mprotect(int cd)
 #if defined(PAGE_CRC)
 static uint16_t crc16_ccitt(const char *data, int length)
 {
-    uint16_t crc;
-    uint8_t buf;
-    int i, j;
+	uint16_t crc;
+	uint8_t buf;
+	int i, j;
 
-    crc = 0xFFFF;
+	crc = 0xFFFF;
 
-    for (i = 0; i < length; i++) {
-        buf = data[i];
+	for (i = 0; i < length; i++) {
+		buf = data[i];
 
-        for (j = 0; j < 8; j++) {
-            if (((crc & 0x8000) >> 8) ^ (buf & 0x80))
-                crc = (crc << 1) ^ 0x8005;
-            else
-                crc = (crc << 1);
+		for (j = 0; j < 8; j++) {
+			if (((crc & 0x8000) >> 8) ^ (buf & 0x80))
+				crc = (crc << 1) ^ 0x8005;
+			else
+				crc = (crc << 1);
 
-            buf <<= 1;
-        }
-    }
+			buf <<= 1;
+		}
+	}
 
     return crc;
 }
@@ -275,7 +290,8 @@ static int cmd_get_pages(int cd)
 		if (ret == 0)
 			break;
 
-		tx_page(cd, req.addr, PAGE_SIZE);
+		if (req.tx_page)
+			tx_page(cd, req.addr, PAGE_SIZE);
 
 		ret = sys_madvise(req.addr, PAGE_SIZE, MADV_DONTNEED);
 		if (ret < 0) {

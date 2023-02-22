@@ -44,6 +44,7 @@
 #include <linux/ptrace.h>
 #include <sys/user.h>
 #include <sys/param.h> /* MIN(), MAX() */
+#include <sys/mman.h>
 
 #include "memcr.h"
 #include "arch/cpu.h"
@@ -97,11 +98,13 @@ struct vm_area {
 
 static char *dump_dir;
 static char *socket_dir;
-static int nowait;
+static int no_wait;
+static int rss_file;
 
 #define BIT(x) (1ULL << x)
 
 #define PM_PAGE_FRAME_NUMBER_MASK	0x007fffffffffffff
+#define PM_PAGE_FILE_OR_SHARED_ANON	61
 #define PM_PAGE_SWAPPED			62
 #define PM_PAGE_PRESENT			63
 
@@ -398,17 +401,17 @@ static int unseize_target(void)
 	return ret;
 }
 
-static inline void create_filesystem_socketname(char * addr, int addr_size, int pid)
+static inline void create_filesystem_socketname(char * addr, int addr_size, pid_t pid)
 {
 	snprintf(addr, addr_size, "%s/memcr%u", socket_dir, pid);
 }
 
-static inline void create_abstract_socketname(char * addr, int addr_size, int pid)
+static inline void create_abstract_socketname(char * addr, int addr_size, pid_t pid)
 {
 	snprintf(addr, addr_size, "#memcr%u", pid);
 }
 
-static int parasite_connect(int pid)
+static int parasite_connect(pid_t pid)
 {
 	int cd;
 	struct sockaddr_un addr = { 0 };
@@ -694,13 +697,13 @@ static void show_target_rss(struct vm_stats *a, struct vm_stats *b)
 		return;
 
 	printf("[i]   RssAnon  %lu kB -> %lu kB (diff %lu kB)\n", a->RssAnon, b->RssAnon, a->RssAnon - b->RssAnon);
-#if 0
-	printf("[i]   RssFile  %lu kB -> %lu kB (diff %lu kB)\n", a->RssFile, b->RssFile, a->RssFile - b->RssFile);
-	printf("[i]   RssShmem %lu kB -> %lu kB (diff %lu kB)\n", a->RssShmem, b->RssShmem, a->RssShmem - b->RssShmem);
-#else
-	printf("[i]   RssFile  %lu kB\n", a->RssFile);
+
+	if (rss_file)
+		printf("[i]   RssFile  %lu kB -> %lu kB (diff %lu kB)\n", a->RssFile, b->RssFile, a->RssFile - b->RssFile);
+	else
+		printf("[i]   RssFile  %lu kB\n", a->RssFile);
+
 	printf("[i]   RssShmem %lu kB\n", a->RssShmem);
-#endif
 }
 
 static int should_skip_range(void *start, void *end)
@@ -861,30 +864,35 @@ static int target_cmd_mprotect(int pid, void *addr, unsigned long len, unsigned 
 
 	ret = parasite_write(cd, &(char){CMD_MPROTECT}, 1);
 	if (ret != 1) {
-		ret = -1;
-		goto end;
+		close(cd);
+		return -1;
 	}
 
 	ret = parasite_write(cd, &mp, sizeof(mp));
-	if (ret != sizeof(mp))
-		ret = -1;
 
-end:
 	close(cd);
-	return ret;
+
+	if (ret != sizeof(mp))
+		return -1;
+
+	return 0;
 }
 
-static int get_single_page(int cd, void *addr, int fd)
+static int get_single_page(int cd, void *addr, int tx_page, int fd)
 {
 	int ret;
 	struct vm_page_addr req = {
 		.addr = addr,
+		.tx_page = tx_page,
 	};
 	struct vm_page page;
 
 	ret = parasite_write(cd, &req, sizeof(req));
 	if (ret != sizeof(req))
 		return -1;
+
+	if (!tx_page)
+		return 0;
 
 	ret = parasite_read(cd, &page, sizeof(page));
 	if (ret != sizeof(page))
@@ -945,20 +953,30 @@ static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
 			continue;
 		}
 
-		if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
-			uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
+		if (vma->flags & FLAG_ANON || vma->flags & FLAG_HEAP || vma->flags & FLAG_STACK) {
+			if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
+				uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
 
-			nrpages_dumpable++;
+				nrpages_dumpable++;
 
-			ret = page_unevictable(pfn);
-			if (ret) {
-				nrpages_unevictable++;
-				continue;
+				ret = page_unevictable(pfn);
+				if (ret) {
+					nrpages_unevictable++;
+					continue;
+				}
+
+				ret = get_single_page(cd, (void *)addr, 1, fd);
+				if (ret)
+					return ret;
 			}
+		} else if (rss_file && vma->flags & FLAG_FILE) {
+			if (map & BIT(PM_PAGE_FILE_OR_SHARED_ANON)) {
+				nrpages_dumpable++;
 
-			ret = get_single_page(cd, (void *)addr, fd);
-			if (ret)
-				return ret;
+				ret = get_single_page(cd, (void *)addr, 0, fd);
+				if (ret)
+					return ret;
+			}
 		}
 	}
 
@@ -1008,11 +1026,11 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 	ret = 0;
 
 	for (idx = 0; idx < nr_vmas; idx++) {
-		if (vmas[idx].flags & FLAG_ANON || vmas[idx].flags & FLAG_HEAP || vmas[idx].flags & FLAG_STACK) {
-			ret = get_vma_pages(pd, cd, &vmas[idx], fd);
-			if (ret)
-				break;
-		}
+		struct vm_area *vma = &vmas[idx];
+
+		ret = get_vma_pages(pd, cd, vma, fd);
+		if (ret)
+			break;
 	}
 
 out:
@@ -1179,6 +1197,7 @@ static int cmd_checkpoint(pid_t pid)
 		fprintf(stderr, "get_target_pages() failed\n");
 		exit(1);
 	}
+
 	fprintf(stdout, "[i] download took %lu ms\n", diff_ms(&ts));
 	fprintf(stdout, "[i] stored at %s/pages-%d.img\n", dump_dir, pid);
 
@@ -1991,7 +2010,7 @@ static int user_interactive_mode(pid_t pid)
 	if (ret)
 		goto out;
 
-	if (!nowait) {
+	if (!no_wait) {
 		long dms;
 		long h, m, s, ms;
 		struct timespec ts;
@@ -2026,7 +2045,8 @@ static void usage(const char *name, int status)
 		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
 		"  -l --listen\tTCP port number to listen for requests\n" \
-		"  -n --nowait\tno wait for key press\n",
+		"  -n --no-wait\tno wait for key press\n" \
+		"  -f --rss-file\tinclude file mapped memory\n",
 		name);
 	exit(status);
 }
@@ -2056,14 +2076,15 @@ int main(int argc, char *argv[])
 		{ "dir",			1,	0,	0},
 		{ "parasite-socket-dir",	1,	0,	0},
 		{ "listen",			1,	0,	0},
-		{ "nowait",			0,	0,	0},
+		{ "no-wait",			0,	0,	0},
+		{ "rss-file",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
 
 	dump_dir = "/tmp";
 	socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:n", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nf", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2081,7 +2102,10 @@ int main(int argc, char *argv[])
 				listen_port = atoi(optarg);
 				break;
 			case 'n':
-				nowait = 1;
+				no_wait = 1;
+				break;
+			case 'f':
+				rss_file = 1;
 				break;
 			default: /* '?' */
 				usage(argv[0], 1);
