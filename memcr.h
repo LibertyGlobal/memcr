@@ -85,6 +85,11 @@ struct vm_page {
 #endif
 } __attribute__((packed));
 
+struct vm_region {
+	unsigned long addr;
+	unsigned long length;
+};
+
 struct target_context {
 	pid_t pid;
 	unsigned long *pc;
