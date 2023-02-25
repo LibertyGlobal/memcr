@@ -99,6 +99,7 @@ struct vm_area {
 static char *dump_dir;
 static char *socket_dir;
 static int no_wait;
+static int proc_mem;
 static int rss_file;
 
 #define BIT(x) (1ULL << x)
@@ -124,6 +125,8 @@ static struct vm_skip_addr skip_addr[MAX_SKIP_ADDR];
 #define MAX_VMAS			4096
 static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
+
+#define MAX_VM_REGION_SIZE (256 * PAGE_SIZE)
 
 static pid_t parasite_pid;
 static struct target_context ctx;
@@ -648,9 +651,8 @@ static FILE *fopen_proc(pid_t pid, char *file_name)
 
 	snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
 	f = fopen(path, "r");
-	if (!f) {
+	if (!f)
 		fprintf(stderr, "fopen() %s failed: %m\n", path);
-	}
 
 	return f;
 }
@@ -739,14 +741,14 @@ static unsigned long get_vmas_size(struct vm_area vmas[], int nr_vmas)
 static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 {
 	int ret = -1;
-	FILE *smaps;
+	FILE *maps;
 	char buf[1024];
 
-	smaps = fopen_proc(pid, "maps");
-	if (!smaps)
+	maps = fopen_proc(pid, "maps");
+	if (!maps)
 		return ret;
 
-	while (fgets(buf, sizeof(buf), smaps)) {
+	while (fgets(buf, sizeof(buf), maps)) {
 		struct vm_area *vma;
 		unsigned long start, end, pgoff;
 		char r,w,x,s;
@@ -814,7 +816,7 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 
 	ret = 0;
 err:
-	fclose(smaps);
+	fclose(maps);
 	return ret;
 }
 
@@ -878,11 +880,46 @@ static int target_cmd_mprotect(int pid, void *addr, unsigned long len, unsigned 
 	return 0;
 }
 
-static int get_single_page(int cd, void *addr, int tx_page, int fd)
+static int get_mem_region(int md, int cd, unsigned long addr, unsigned long length, int fd)
+{
+	int ret;
+	unsigned long off;
+	unsigned long end;
+	char buf[MAX_VM_REGION_SIZE];
+
+	off = lseek(md, addr, SEEK_SET);
+	if (off != addr) {
+		fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
+		return -1;
+	}
+
+	ret = _read(md, &buf, length);
+	if (ret != length)
+		return -1;
+
+	ret = _write(fd, &buf, length);
+	if (ret != length)
+		return -1;
+
+	for (end = addr + length; addr < end; addr += PAGE_SIZE) {
+		struct vm_page_addr req = {
+			.addr = (void *)addr,
+			.tx_page = 0,
+		};
+
+		ret = parasite_write(cd, &req, sizeof(req));
+		if (ret != sizeof(req))
+			return -1;
+	}
+
+	return 0;
+}
+
+static int get_target_page(int cd, unsigned long addr, int tx_page, int fd)
 {
 	int ret;
 	struct vm_page_addr req = {
-		.addr = addr,
+		.addr = (void *)addr,
 		.tx_page = tx_page,
 	};
 	struct vm_page page;
@@ -898,8 +935,8 @@ static int get_single_page(int cd, void *addr, int tx_page, int fd)
 	if (ret != sizeof(page))
 		return -1;
 
-	ret = _write(fd, &page, sizeof(page));
-	if (ret != sizeof(page))
+	ret = _write(fd, &page.data, sizeof(page.data));
+	if (ret != sizeof(page.data))
 		return -1;
 
 	return 0;
@@ -922,7 +959,7 @@ static int page_unevictable(uint64_t pfn)
 	return 0;
 }
 
-static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
+static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 {
 	int ret;
 	uint64_t off;
@@ -930,6 +967,9 @@ static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
 	unsigned long idx;
 	unsigned long nrpages_dumpable = 0;
 	unsigned long nrpages_unevictable = 0;
+
+	unsigned long region_start = 0;
+	unsigned long region_length = 0;
 
 	nrpages = (vma->end - vma->start) / PAGE_SIZE;
 
@@ -953,7 +993,9 @@ static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
 			continue;
 		}
 
-		if (vma->flags & FLAG_ANON || vma->flags & FLAG_HEAP || vma->flags & FLAG_STACK) {
+		if (vma->flags & (FLAG_ANON | FLAG_HEAP | FLAG_STACK)) {
+			struct vm_region vmr;
+
 			if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
 				uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
 
@@ -965,15 +1007,47 @@ static int get_vma_pages(int pd, int cd, struct vm_area *vma, int fd)
 					continue;
 				}
 
-				ret = get_single_page(cd, (void *)addr, 1, fd);
+				if (!region_start)
+					region_start = addr;
+
+				region_length += PAGE_SIZE;
+
+				if ((idx + 1) < nrpages && region_length < MAX_VM_REGION_SIZE)
+					continue;
+			}
+
+			if (!region_start)
+				continue;
+
+			vmr.addr = region_start;
+			vmr.length = region_length;
+
+			ret = _write(fd, &vmr, sizeof(vmr));
+			if (ret != sizeof(vmr))
+				return -1;
+
+			if (proc_mem) {
+				ret = get_mem_region(md, cd, region_start, region_length, fd);
 				if (ret)
 					return ret;
+			} else {
+				for (addr = region_start; addr < region_start + region_length; addr += PAGE_SIZE) {
+					ret = get_target_page(cd, addr, 1, fd);
+					if (ret)
+						return ret;
+				}
 			}
-		} else if (rss_file && vma->flags & FLAG_FILE) {
+
+			region_start = 0;
+			region_length = 0;
+			continue;
+		}
+
+		if (rss_file && vma->flags & FLAG_FILE) {
 			if (map & BIT(PM_PAGE_FILE_OR_SHARED_ANON)) {
 				nrpages_dumpable++;
 
-				ret = get_single_page(cd, (void *)addr, 0, fd);
+				ret = get_target_page(cd, addr, 0, fd);
 				if (ret)
 					return ret;
 			}
@@ -996,6 +1070,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 	char path[PATH_MAX];
 	int pd = -1;
 	int fd = -1;
+	int md = -1;
 	int cd = -1;
 	int idx;
 
@@ -1009,6 +1084,12 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 	if (fd < 0) {
 		fprintf(stderr, "%s() open failed with: %m\n", __func__);
 		return -1;
+	}
+
+	if (proc_mem) {
+		md = open_proc(pid, "mem");
+		if (md < 0)
+			goto out;
 	}
 
 	cd = parasite_connect(pid);
@@ -1028,13 +1109,14 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 	for (idx = 0; idx < nr_vmas; idx++) {
 		struct vm_area *vma = &vmas[idx];
 
-		ret = get_vma_pages(pd, cd, vma, fd);
+		ret = get_vma_pages(pd, md, cd, vma, fd);
 		if (ret)
 			break;
 	}
 
 out:
 	close(cd);
+	close(md);
 	close(fd);
 	close(pd);
 	return ret;
@@ -1098,16 +1180,27 @@ static int target_set_pages(pid_t pid)
 	}
 
 	while (1) {
-		struct vm_page page;
+		struct vm_region vmr;
+		unsigned long addr;
 
-		ret = _read(fd, &page, sizeof(page));
+		ret = _read(fd, &vmr, sizeof(vmr));
 		if (ret == 0)
 			break;
 
-		ret = parasite_write(cd, &page, sizeof(page));
-		if (ret != sizeof(page)) {
-			ret = -1;
-			break;
+		for (addr = vmr.addr; addr < vmr.addr + vmr.length; addr += PAGE_SIZE) {
+			struct vm_page page = {
+				.addr = (void *)addr,
+			};
+
+			ret = _read(fd, &page.data, sizeof(page.data));
+			if (ret == 0)
+				break;
+
+			ret = parasite_write(cd, &page, sizeof(page));
+			if (ret != sizeof(page)) {
+				ret = -1;
+				break;
+			}
 		}
 	}
 
@@ -1976,7 +2069,8 @@ static int handle_connection(int cd)
 
 static int service_mode(int listen)
 {
-	int csd, cd, ret;
+	int ret = 0;
+	int csd, cd;
 
 	csd = setup_listen_socket(listen);
 	if (csd < 0)
@@ -2046,6 +2140,7 @@ static void usage(const char *name, int status)
 		"        (abstract socket will be used if no path specified)\n" \
 		"  -l --listen\tTCP port number to listen for requests\n" \
 		"  -n --no-wait\tno wait for key press\n" \
+		"  -m --proc-mem\tget pages from /proc/pid/mem\n" \
 		"  -f --rss-file\tinclude file mapped memory\n",
 		name);
 	exit(status);
@@ -2077,6 +2172,7 @@ int main(int argc, char *argv[])
 		{ "parasite-socket-dir",	1,	0,	0},
 		{ "listen",			1,	0,	0},
 		{ "no-wait",			0,	0,	0},
+		{ "proc-mem",			0,	0,	0},
 		{ "rss-file",			0,	0,	0},
 		{ NULL,			0,	0,	0}
 	};
@@ -2084,7 +2180,7 @@ int main(int argc, char *argv[])
 	dump_dir = "/tmp";
 	socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nf", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmf", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2103,6 +2199,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'n':
 				no_wait = 1;
+				break;
+			case 'm':
+				proc_mem = 1;
 				break;
 			case 'f':
 				rss_file = 1;
