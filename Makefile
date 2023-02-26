@@ -80,7 +80,7 @@ else
     $(error unsupported arch: $(ARCH))
 endif
 
-PCFLAGS = -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -ffreestanding -fomit-frame-pointer -Wa,--noexecstack
+PCFLAGS += -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -ffreestanding -fomit-frame-pointer -Wa,--noexecstack
 
 GOFF = ./gen-offsets.sh
 

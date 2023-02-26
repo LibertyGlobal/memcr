@@ -216,16 +216,21 @@ static int cmd_mprotect(int cd)
 	int ret;
 	struct vm_mprotect req;
 
-	ret = xread(cd, &req, sizeof(req));
-	if (ret < 0) {
-		print_err(2, "xread() failed with ret ", ret);
-		BOOM();
-	}
+	while (1) {
+		ret = xread(cd, &req, sizeof(req));
+		if (ret == 0)
+			break;
 
-	ret = sys_mprotect(req.addr, req.len, req.prot);
-	if (ret == -1) {
-		print_err(2, "sys_mprotect() failed with ret ", ret);
-		BOOM();
+		if (ret < 0) {
+			print_err(2, "xread() failed with ret ", ret);
+			BOOM();
+		}
+
+		ret = sys_mprotect(req.addr, req.len, req.prot);
+		if (ret == -1) {
+			print_err(2, "sys_mprotect() failed with ret ", ret);
+			BOOM();
+		}
 	}
 
 	return 0;
@@ -241,10 +246,15 @@ static int cmd_get_pages(int cd)
 		if (ret == 0)
 			break;
 
+		if (ret < 0) {
+			print_err(2, "xread() failed with ret ", ret);
+			BOOM();
+		}
+
 		if (req.flags & VM_REGION_TX)
 			xwrite(cd, (void *)req.vmr.addr, req.vmr.len);
 
-		ret = sys_madvise((void *)req.vmr.addr, req.vmr.len, MADV_DONTNEED);
+		ret = sys_madvise(req.vmr.addr, req.vmr.len, MADV_DONTNEED);
 		if (ret < 0) {
 			print_msg(2, "sys_madvise() MADV_DONTNEED of ");
 			print_msg(2, ulong_to_hstr((long)req.vmr.addr));

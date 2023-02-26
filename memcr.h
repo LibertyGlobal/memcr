@@ -63,8 +63,8 @@ struct vm_skip_addr {
 } __attribute__((packed));
 
 struct vm_mprotect {
-	void *addr;
-	unsigned long len;
+	unsigned long addr;
+	size_t len;
 	unsigned long prot;
 } __attribute__((packed));
 

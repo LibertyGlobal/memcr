@@ -45,14 +45,14 @@ int sys_close(int fd)
 	return syscall1(__NR_close, fd);
 }
 
-int sys_mprotect(void *addr, size_t len, int prot)
+int sys_mprotect(unsigned long addr, size_t len, unsigned long prot)
 {
-	return syscall3(__NR_mprotect, (unsigned long)addr, len, prot);
+	return syscall3(__NR_mprotect, addr, len, prot);
 }
 
-int sys_madvise(void *addr, size_t len, int advice)
+int sys_madvise(unsigned long addr, size_t len, int advice)
 {
-	return syscall3(__NR_madvise, (unsigned long)addr, len, advice);
+	return syscall3(__NR_madvise, addr, len, advice);
 }
 
 int sys_socket(int family, int type, int protocol)
