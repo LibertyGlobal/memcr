@@ -139,17 +139,6 @@ static void xstrcpy(char *dst, char *src)
 	dst[idx + 1] = '\0';
 }
 
-static void memcpy_page(void *dst, void *src)
-{
-	int i;
-
-	for (i = 0; i < PAGE_SIZE / sizeof(unsigned long); i++) {
-		*((unsigned long *)dst) = *((unsigned long *)src);
-		dst += sizeof(unsigned long);
-		src += sizeof(unsigned long);
-	}
-}
-
 static int xread(int fd, void *buf, int size)
 {
 	int ret;
@@ -242,61 +231,23 @@ static int cmd_mprotect(int cd)
 	return 0;
 }
 
-#if defined(PAGE_CRC)
-static uint16_t crc16_ccitt(const char *data, int length)
-{
-	uint16_t crc;
-	uint8_t buf;
-	int i, j;
-
-	crc = 0xFFFF;
-
-	for (i = 0; i < length; i++) {
-		buf = data[i];
-
-		for (j = 0; j < 8; j++) {
-			if (((crc & 0x8000) >> 8) ^ (buf & 0x80))
-				crc = (crc << 1) ^ 0x8005;
-			else
-				crc = (crc << 1);
-
-			buf <<= 1;
-		}
-	}
-
-    return crc;
-}
-#endif
-
-static void tx_page(int fd, void *addr, int size)
-{
-	struct vm_page page;
-
-	page.addr = addr;
-#if defined(PAGE_CRC)
-	page.crc = crc16_ccitt(addr, size);
-#endif
-	memcpy_page(&page.data, addr);
-	xwrite(fd, &page, sizeof(page));
-}
-
 static int cmd_get_pages(int cd)
 {
 	int ret;
-	struct vm_page_addr req;
+	struct vm_region_req req;
 
 	while (1) {
 		ret = xread(cd, &req, sizeof(req));
 		if (ret == 0)
 			break;
 
-		if (req.tx_page)
-			tx_page(cd, req.addr, PAGE_SIZE);
+		if (req.flags & VM_REGION_TX)
+			xwrite(cd, (void *)req.vmr.addr, req.vmr.len);
 
-		ret = sys_madvise(req.addr, PAGE_SIZE, MADV_DONTNEED);
+		ret = sys_madvise((void *)req.vmr.addr, req.vmr.len, MADV_DONTNEED);
 		if (ret < 0) {
 			print_msg(2, "sys_madvise() MADV_DONTNEED of ");
-			print_msg(2, ulong_to_hstr((long)req.addr));
+			print_msg(2, ulong_to_hstr((long)req.vmr.addr));
 			print_msg(2, " failed with ");
 			print_msg(2, long_to_str(ret));
 			print_msg(2, "\n");
@@ -309,32 +260,14 @@ static int cmd_get_pages(int cd)
 static int cmd_set_pages(int cd)
 {
 	int ret;
+	struct vm_region_req req;
 
 	while (1) {
-		struct vm_page page;
-#if defined(PAGE_CRC)
-		uint16_t crc;
-#endif
-
-		ret = xread(cd, &page, sizeof(page));
+		ret = xread(cd, &req, sizeof(req));
 		if (ret == 0)
 			break;
 
-		memcpy_page(page.addr, &page.data);
-
-#if defined(PAGE_CRC)
-		crc = crc16_ccitt(page.addr, sizeof(page.data));
-		if (page.crc != crc) {
-			print_msg(2, "BUG: dst page ");
-			print_msg(2, ulong_to_hstr((unsigned long)page.addr));
-			print_msg(2, " crc mismatch ");
-			print_msg(2, long_to_str(page.crc));
-			print_msg(2, " != ");
-			print_msg(2, long_to_str(crc));
-			print_msg(2, "\n");
-			BOOM();
-		}
-#endif
+		xread(cd, (void *)req.vmr.addr, req.vmr.len);
 	}
 
 	return 0;
