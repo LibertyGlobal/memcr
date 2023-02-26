@@ -30,8 +30,7 @@ struct parasite_args {
 };
 
 typedef enum {
-	CMD_GET_TID = 1,
-	CMD_GET_SKIP_ADDR,
+	CMD_GET_SKIP_ADDR = 1,
 	CMD_MPROTECT,
 	CMD_GET_PAGES,
 	CMD_SET_PAGES,

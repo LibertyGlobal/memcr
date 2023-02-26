@@ -188,13 +188,6 @@ static int xwrite(int fd, void *buf, int size)
 	return ret;
 }
 
-static int cmd_get_tid(int cd)
-{
-	pid_t tid = sys_gettid();
-
-	return sys_write(cd, &tid, sizeof(tid));
-}
-
 static void send_skip_addr(int fd, void *addr, char d)
 {
 	struct vm_skip_addr sa = {
@@ -302,8 +295,6 @@ static int handle_connection(int cd)
 	}
 
 	switch (cmd) {
-		case CMD_GET_TID:
-			return cmd_get_tid(cd);
 		case CMD_GET_SKIP_ADDR:
 			return cmd_get_skip_addr(cd);
 		case CMD_MPROTECT:

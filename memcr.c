@@ -129,6 +129,7 @@ static int nr_vmas;
 #define MAX_VM_REGION_SIZE (256 * PAGE_SIZE)
 
 static pid_t parasite_pid;
+static pid_t parasite_pid_clone;
 static struct target_context ctx;
 
 static int interrupted;
@@ -568,29 +569,6 @@ static int setup_listen_socket(int port)
 err:
 	close(sd);
 	return -1;
-}
-
-static int target_cmd_get_tid(int pid, pid_t *tid)
-{
-	int ret;
-	int cd;
-
-	*tid = 0;
-
-	cd = parasite_connect(pid);
-	if (cd < 0)
-		return -1;
-
-	ret = parasite_write(cd, &(char){CMD_GET_TID}, 1);
-	if (ret != 1)
-		return -1;
-
-	ret = parasite_read(cd, tid, sizeof(pid_t));
-	if (ret != sizeof(pid_t))
-		return -1;
-
-	close(cd);
-	return 0;
 }
 
 static void set_skip_addr(struct vm_skip_addr addr)
@@ -1284,21 +1262,13 @@ static long diff_ms(struct timespec *ts)
 static int cmd_checkpoint(pid_t pid)
 {
 	int ret;
-	pid_t tpid;
 	struct vm_stats vms_a, vms_b;
 	struct timespec ts;
 
-	ret = target_cmd_get_tid(pid, &tpid);
-	if (ret == -1) {
-		fprintf(stderr, "[-] GET_TID failed\n");
-		return ret;
-	}
-
-	if (tpid != parasite_pid) {
-		fprintf(stdout, "[i] parasite pid %d (LXC pid %d)\n", parasite_pid, tpid);
-	} else {
-		fprintf(stdout, "[i] parasite pid %d (no LXC)\n", parasite_pid);
-	}
+	if (parasite_pid != parasite_pid_clone)
+		fprintf(stdout, "[i] parasite pid %d (namespace pid %d)\n", parasite_pid, parasite_pid_clone);
+	else
+		fprintf(stdout, "[i] parasite pid %d\n", parasite_pid);
 
 	ret = target_cmd_get_skip_addr(pid);
 	if (ret) {
@@ -1708,10 +1678,8 @@ static int execute_parasite_checkpoint(pid_t pid)
 
 	/* clone parasite which will trap and wait for instruction */
 	ret = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);
-#if 0
-	printf(" = %d\n", ret);
-#endif
 	assert(ret > 0);
+	parasite_pid_clone = ret;
 
 	/* translate lxc ns pid to global one */
 	iterate_pstree(pid, 0, MAX_THREADS, update_parasite_pid);
