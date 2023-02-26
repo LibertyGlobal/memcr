@@ -30,8 +30,7 @@ struct parasite_args {
 };
 
 typedef enum {
-	CMD_GET_SKIP_ADDR = 1,
-	CMD_MPROTECT,
+	CMD_MPROTECT = 1,
 	CMD_GET_PAGES,
 	CMD_SET_PAGES,
 	CMD_END,
@@ -54,11 +53,6 @@ typedef enum {
 
 struct service_response {
 	memcr_svc_response resp_code;
-} __attribute__((packed));
-
-struct vm_skip_addr {
-	void *addr;
-	char desc;
 } __attribute__((packed));
 
 struct vm_mprotect {
