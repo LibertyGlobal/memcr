@@ -850,31 +850,17 @@ static int open_proc(pid_t pid, char *file_name)
 	return fd;
 }
 
-static int target_cmd_mprotect(int pid, void *addr, unsigned long len, unsigned long prot)
+static int target_mprotect(int cd, unsigned long addr, size_t len, unsigned long prot)
 {
 	int ret;
-	int cd;
-	struct vm_mprotect mp = {
+	struct vm_mprotect req = {
 		.addr = addr,
 		.len = len,
 		.prot = prot,
 	};
 
-	cd = parasite_connect(pid);
-	if (cd < 0)
-		return cd;
-
-	ret = parasite_write(cd, &(char){CMD_MPROTECT}, 1);
-	if (ret != 1) {
-		close(cd);
-		return -1;
-	}
-
-	ret = parasite_write(cd, &mp, sizeof(mp));
-
-	close(cd);
-
-	if (ret != sizeof(mp))
+	ret = parasite_write(cd, &req, sizeof(req));
+	if (ret != sizeof(req))
 		return -1;
 
 	return 0;
@@ -1134,10 +1120,22 @@ out:
 	return ret;
 }
 
-static void target_vmas_mprotect_off(int pid)
+static int target_mprotect_off(int pid)
 {
+	int ret;
+	int cd;
 	int idx;
 	struct vm_area *vma;
+
+	cd = parasite_connect(pid);
+	if (cd < 0)
+		return cd;
+
+	ret = parasite_write(cd, &(char){CMD_MPROTECT}, 1);
+	if (ret != 1) {
+		close(cd);
+		return -1;
+	}
 
 	for (idx = 0; idx < nr_vmas; idx++) {
 		vma = &vmas[idx];
@@ -1145,14 +1143,31 @@ static void target_vmas_mprotect_off(int pid)
 		if ((vma->prot & PROT_READ) && (vma->prot & PROT_WRITE))
 			continue;
 
-		target_cmd_mprotect(pid, (void *)vma->start, vma->end - vma->start, vma->prot | PROT_READ | PROT_WRITE);
+		ret = target_mprotect(cd, vma->start, vma->end - vma->start, vma->prot | PROT_READ | PROT_WRITE);
+		if (ret)
+			break;
 	}
+
+	close(cd);
+	return ret;
 }
 
-static void target_vmas_mprotect_on(int pid)
+static int target_mprotect_on(int pid)
 {
+	int ret;
+	int cd;
 	int idx;
 	struct vm_area *vma;
+
+	cd = parasite_connect(pid);
+	if (cd < 0)
+		return cd;
+
+	ret = parasite_write(cd, &(char){CMD_MPROTECT}, 1);
+	if (ret != 1) {
+		close(cd);
+		return -1;
+	}
 
 	for (idx = 0; idx < nr_vmas; idx++) {
 		vma = &vmas[idx];
@@ -1160,8 +1175,13 @@ static void target_vmas_mprotect_on(int pid)
 		if ((vma->prot & PROT_READ) && (vma->prot & PROT_WRITE))
 			continue;
 
-		target_cmd_mprotect(pid, (void *)vma->start, vma->end - vma->start, vma->prot);
+		ret = target_mprotect(cd, vma->start, vma->end - vma->start, vma->prot);
+		if (ret)
+			break;
 	}
+
+	close(cd);
+	return ret;
 }
 
 static int target_set_pages(pid_t pid)
@@ -1297,7 +1317,7 @@ static int cmd_checkpoint(pid_t pid)
 	print_target_vmas(vmas, nr_vmas, vms_a.VmRSS);
 
 	fprintf(stdout, "[+] mprotect off\n");
-	target_vmas_mprotect_off(pid);
+	target_mprotect_off(pid);
 
 	fprintf(stdout, "[+] downloading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1334,7 +1354,7 @@ static int cmd_restore(pid_t pid)
 	fprintf(stdout, "[i] upload took %lu ms\n", diff_ms(&ts));
 
 	fprintf(stdout, "[+] mprotect on\n");
-	target_vmas_mprotect_on(pid);
+	target_mprotect_on(pid);
 
 	/*
 	 * This is needed to avoid a race between freezer and target when target sets up its memory

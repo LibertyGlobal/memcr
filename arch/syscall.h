@@ -22,8 +22,8 @@
 ssize_t sys_read(int fd, void *buf, size_t count);
 ssize_t sys_write(int fd, const void *buf, size_t count);
 int sys_close(int fd);
-int sys_mprotect(void *addr, size_t len, int prot);
-int sys_madvise(void *addr, size_t len, int advice);
+int sys_mprotect(unsigned long addr, size_t len, int prot);
+int sys_madvise(unsigned long addr, size_t len, int advice);
 int sys_socket(int family, int type, int protocol);
 int sys_accept(int fd, struct sockaddr *addr, socklen_t *addrlen);
 int sys_bind(int fd, struct sockaddr *addr, socklen_t len);
