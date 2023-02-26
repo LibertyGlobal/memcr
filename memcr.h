@@ -25,10 +25,6 @@
 #define PAGE_SIZE 4096
 #endif
 
-#if 0
-#define PAGE_CRC
-#endif
-
 struct parasite_args {
 	char addr[108]; /* abstract or filesystem socket address */
 };
@@ -72,23 +68,17 @@ struct vm_mprotect {
 	unsigned long prot;
 } __attribute__((packed));
 
-struct vm_page_addr {
-	void *addr;
-	char tx_page;
-} __attribute__((packed));
-
-struct vm_page {
-	void *addr;
-	char data[PAGE_SIZE];
-#if defined(PAGE_CRC)
-	uint16_t crc;
-#endif
-} __attribute__((packed));
-
 struct vm_region {
 	unsigned long addr;
-	unsigned long length;
+	unsigned long len;
 };
+
+#define VM_REGION_TX 0x01
+
+struct vm_region_req {
+	struct vm_region vmr;
+	char flags;
+} __attribute__((packed));
 
 struct target_context {
 	pid_t pid;

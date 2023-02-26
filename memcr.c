@@ -880,12 +880,16 @@ static int target_cmd_mprotect(int pid, void *addr, unsigned long len, unsigned 
 	return 0;
 }
 
-static int get_mem_region(int md, int cd, unsigned long addr, unsigned long length, int fd)
+static int get_mem_region(int md, int cd, unsigned long addr, unsigned long len, int fd)
 {
 	int ret;
 	unsigned long off;
-	unsigned long end;
 	char buf[MAX_VM_REGION_SIZE];
+	struct vm_region_req req = {
+		.vmr.addr = addr,
+		.vmr.len = len,
+		.flags = 0,
+	};
 
 	off = lseek(md, addr, SEEK_SET);
 	if (off != addr) {
@@ -893,50 +897,44 @@ static int get_mem_region(int md, int cd, unsigned long addr, unsigned long leng
 		return -1;
 	}
 
-	ret = _read(md, &buf, length);
-	if (ret != length)
+	ret = _read(md, &buf, len);
+	if (ret != len)
 		return -1;
 
-	ret = _write(fd, &buf, length);
-	if (ret != length)
+	ret = _write(fd, &buf, len);
+	if (ret != len)
 		return -1;
-
-	for (end = addr + length; addr < end; addr += PAGE_SIZE) {
-		struct vm_page_addr req = {
-			.addr = (void *)addr,
-			.tx_page = 0,
-		};
-
-		ret = parasite_write(cd, &req, sizeof(req));
-		if (ret != sizeof(req))
-			return -1;
-	}
-
-	return 0;
-}
-
-static int get_target_page(int cd, unsigned long addr, int tx_page, int fd)
-{
-	int ret;
-	struct vm_page_addr req = {
-		.addr = (void *)addr,
-		.tx_page = tx_page,
-	};
-	struct vm_page page;
 
 	ret = parasite_write(cd, &req, sizeof(req));
 	if (ret != sizeof(req))
 		return -1;
 
-	if (!tx_page)
-		return 0;
+	return 0;
+}
 
-	ret = parasite_read(cd, &page, sizeof(page));
-	if (ret != sizeof(page))
+static int get_target_mem_region(int cd, unsigned long addr, unsigned long len, char flags, int fd)
+{
+	int ret;
+	struct vm_region_req req = {
+		.vmr.addr = addr,
+		.vmr.len = len,
+		.flags = flags,
+	};
+	char buf[MAX_VM_REGION_SIZE];
+
+	ret = parasite_write(cd, &req, sizeof(req));
+	if (ret != sizeof(req))
 		return -1;
 
-	ret = _write(fd, &page.data, sizeof(page.data));
-	if (ret != sizeof(page.data))
+	if (!(req.flags & VM_REGION_TX))
+		return 0;
+
+	ret = parasite_read(cd, &buf, len);
+	if (ret != len)
+		return -1;
+
+	ret = _write(fd, &buf, len);
+	if (ret != len)
 		return -1;
 
 	return 0;
@@ -1020,7 +1018,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				continue;
 
 			vmr.addr = region_start;
-			vmr.length = region_length;
+			vmr.len = region_length;
 
 			ret = _write(fd, &vmr, sizeof(vmr));
 			if (ret != sizeof(vmr))
@@ -1031,11 +1029,9 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				if (ret)
 					return ret;
 			} else {
-				for (addr = region_start; addr < region_start + region_length; addr += PAGE_SIZE) {
-					ret = get_target_page(cd, addr, 1, fd);
-					if (ret)
-						return ret;
-				}
+				ret = get_target_mem_region(cd, region_start, region_length, 1, fd);
+				if (ret)
+					return ret;
 			}
 
 			region_start = 0;
@@ -1047,10 +1043,26 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			if (map & BIT(PM_PAGE_FILE_OR_SHARED_ANON)) {
 				nrpages_dumpable++;
 
-				ret = get_target_page(cd, addr, 0, fd);
-				if (ret)
-					return ret;
+				if (!region_start)
+					region_start = addr;
+
+				region_length += PAGE_SIZE;
+
+				if ((idx + 1) < nrpages)
+					continue;
+
 			}
+
+			if (!region_start)
+				continue;
+
+			ret = get_target_mem_region(cd, region_start, region_length, 0, fd);
+			if (ret)
+				return ret;
+
+			region_start = 0;
+			region_length = 0;
+			continue;
 		}
 	}
 
@@ -1181,26 +1193,30 @@ static int target_set_pages(pid_t pid)
 
 	while (1) {
 		struct vm_region vmr;
-		unsigned long addr;
+		struct vm_region_req req;
+		char buf[MAX_VM_REGION_SIZE];
 
 		ret = _read(fd, &vmr, sizeof(vmr));
 		if (ret == 0)
 			break;
 
-		for (addr = vmr.addr; addr < vmr.addr + vmr.length; addr += PAGE_SIZE) {
-			struct vm_page page = {
-				.addr = (void *)addr,
-			};
+		ret = _read(fd, &buf, vmr.len);
+		if (ret == 0)
+			break;
 
-			ret = _read(fd, &page.data, sizeof(page.data));
-			if (ret == 0)
-				break;
+		req.vmr = vmr;
+		req.flags = 0;
 
-			ret = parasite_write(cd, &page, sizeof(page));
-			if (ret != sizeof(page)) {
-				ret = -1;
-				break;
-			}
+		ret = parasite_write(cd, &req, sizeof(req));
+		if (ret != sizeof(req)) {
+			ret = -1;
+			break;
+		}
+
+		ret = parasite_write(cd, &buf, vmr.len);
+		if (ret != vmr.len) {
+			ret = -1;
+			break;
 		}
 	}
 
