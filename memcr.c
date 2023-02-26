@@ -119,9 +119,6 @@ static int kpageflags_fd;
 static pid_t tids[MAX_THREADS];
 static int nr_threads;
 
-#define MAX_SKIP_ADDR			1024
-static struct vm_skip_addr skip_addr[MAX_SKIP_ADDR];
-
 #define MAX_VMAS			4096
 static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
@@ -571,57 +568,6 @@ err:
 	return -1;
 }
 
-static void set_skip_addr(struct vm_skip_addr addr)
-{
-	int idx;
-
-	for (idx = 0; idx < MAX_SKIP_ADDR; idx++) {
-		if (skip_addr[idx].addr != NULL)
-			continue;
-
-		skip_addr[idx] = addr;
-
-#if 0
-		fprintf(stdout, "[%d] skip addr %p, desc '%c'\n", idx, skip_addr[idx].addr, skip_addr[idx].desc);
-#endif
-		break;
-	}
-
-	if (idx == MAX_SKIP_ADDR) {
-		fprintf(stderr, "error: idx == MAX_SKIP_ADDR\n");
-	}
-}
-
-static int target_cmd_get_skip_addr(int pid)
-{
-	int ret;
-	int cd;
-
-	cd = parasite_connect(pid);
-	if (cd < 0)
-		return cd;
-
-	ret = parasite_write(cd, &(char){CMD_GET_SKIP_ADDR}, 1);
-	if (ret != 1) {
-		ret = -1;
-		goto out;
-	}
-
-	while (1) {
-		struct vm_skip_addr addr;
-
-		ret = parasite_read(cd, &addr, sizeof(addr));
-		if (ret == 0)
-			break;
-
-		set_skip_addr(addr);
-	}
-
-out:
-	close(cd);
-	return ret;
-}
-
 static FILE *fopen_proc(pid_t pid, char *file_name)
 {
 	FILE *f;
@@ -686,23 +632,9 @@ static void show_target_rss(struct vm_stats *a, struct vm_stats *b)
 	printf("[i]   RssShmem %lu kB\n", a->RssShmem);
 }
 
-static int should_skip_range(void *start, void *end)
+static int should_skip_range(unsigned long start, unsigned long end)
 {
-	int idx;
-
-	for (idx = 0; idx < MAX_SKIP_ADDR; idx++) {
-		if (skip_addr[idx].addr == NULL)
-			break;
-
-		if (skip_addr[idx].addr >= start && skip_addr[idx].addr < end) {
-#if 0
-			fprintf(stdout, "skip addr range %p..%p because of %p desc '%c'\n", start, end, skip_addr[idx].addr, skip_addr[idx].desc);
-#endif
-			return 1;
-		}
-	}
-
-	return 0;
+	return ctx.blob >= (unsigned long *)start && ctx.blob < (unsigned long *)end;
 }
 
 static unsigned long get_vmas_size(struct vm_area vmas[], int nr_vmas)
@@ -741,8 +673,8 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 			goto err;
 		}
 
-		/* parasite stack, bss, etc. */
-		if (should_skip_range((void *)start, (void *)(end + PAGE_SIZE)))
+		/* parasite vma */
+		if (should_skip_range(start, end + PAGE_SIZE))
 			continue;
 
 		if (file_path[0] == '/') {
@@ -1270,12 +1202,6 @@ static int cmd_checkpoint(pid_t pid)
 	else
 		fprintf(stdout, "[i] parasite pid %d\n", parasite_pid);
 
-	ret = target_cmd_get_skip_addr(pid);
-	if (ret) {
-		fprintf(stderr, "[-] GET_SKIP_ADDR failed: ret %d\n", ret);
-		return 1;
-	}
-
 	ret = scan_target_vmas(pid, vmas, &nr_vmas);
 	if (ret) {
 		fprintf(stderr, "[-] scan_target_vmas() failed: ret %d\n", ret);
@@ -1650,7 +1576,6 @@ static int ctx_restore(pid_t pid)
 static int execute_parasite_checkpoint(pid_t pid)
 {
 	unsigned long ret;
-	struct vm_skip_addr paddr;
 
 	ctx_save(pid);
 
@@ -1670,11 +1595,6 @@ static int execute_parasite_checkpoint(pid_t pid)
 	poke(pid, ctx.blob, (unsigned long *)parasite_blob, sizeof(parasite_blob));
 
 	setup_parasite_args(pid, ctx.blob);
-
-	/* skip parasite vma */
-	paddr.addr = ctx.blob;
-	paddr.desc = 's';
-	set_skip_addr(paddr);
 
 	/* clone parasite which will trap and wait for instruction */
 	ret = execute_blob(&ctx, clone_blob, clone_blob_size, (unsigned long)ctx.blob, 0);

@@ -32,11 +32,8 @@
 #define __stringify_1(x...)	#x
 #define __stringify(x...)	__stringify_1(x)
 
-#define PAGE_SIZE 4096
-
 #define BOOM() do { *((int *)NULL) = 1; } while (0)
 
-static int bss;
 static int finish;
 
 #if VERBOSE == 1
@@ -188,22 +185,6 @@ static int xwrite(int fd, void *buf, int size)
 	return ret;
 }
 
-static void send_skip_addr(int fd, void *addr, char d)
-{
-	struct vm_skip_addr sa = {
-		.addr = addr,
-		.desc = d,
-	};
-
-	xwrite(fd, &sa, sizeof(sa));
-}
-
-static int cmd_get_skip_addr(int cd)
-{
-	send_skip_addr(cd, &bss, 'b');
-	return 0;
-}
-
 static int cmd_mprotect(int cd)
 {
 	int ret;
@@ -295,8 +276,6 @@ static int handle_connection(int cd)
 	}
 
 	switch (cmd) {
-		case CMD_GET_SKIP_ADDR:
-			return cmd_get_skip_addr(cd);
 		case CMD_MPROTECT:
 			return cmd_mprotect(cd);
 		case CMD_GET_PAGES:
