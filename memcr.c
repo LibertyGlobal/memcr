@@ -1940,7 +1940,7 @@ static int handle_connection(int cd)
 
 			if (is_pid_checkpointed(svc_cmd.pid)) {
 				fprintf(stdout, "[i] Process %d is already checkpointed!\n", svc_cmd.pid);
-				send_response_to_client(cd, MEMCR_OK);
+				send_response_to_client(cd, MEMCR_ERROR);
 				break;
 			}
 
@@ -1974,7 +1974,7 @@ static int handle_connection(int cd)
 
 			if (!is_pid_checkpointed(svc_cmd.pid)) {
 				fprintf(stdout, "[i] Process %d is not checkpointed!\n", svc_cmd.pid);
-				send_response_to_client(cd, MEMCR_OK);
+				send_response_to_client(cd, MEMCR_ERROR);
 				break;
 			}
 
