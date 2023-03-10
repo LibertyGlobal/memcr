@@ -20,43 +20,51 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <getopt.h>
 #include <stdlib.h>
 
 #include "memcr.h"
 
-
-static int xconnect(int port)
+static int xconnect(struct sockaddr *addr, socklen_t addrlen)
 {
-	int cd;
-	int ret;
-	struct sockaddr_in addr;
-	int cnt = 0;
+	int cd, ret;
 
-	cd = socket(AF_INET, SOCK_STREAM, 0);
+	cd = socket(addr->sa_family, SOCK_STREAM, 0);
 	if (cd < 0) {
 		fprintf(stderr, "socket() failed: %m\n");
 		return -1;
 	}
 
+	ret = connect(cd, addr, addrlen);
+	if (ret < 0) {
+			fprintf(stderr, "connect() to socket %s failed: %m\n", addr->sa_data);
+			close(cd);
+			return ret;
+	}
+
+	return cd;
+}
+
+static int xconnect_unix(const char *path)
+{
+	struct sockaddr_un addr;
+	addr.sun_family = PF_UNIX;
+	memset(addr.sun_path, 0, sizeof(addr.sun_path));
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+
+	return xconnect((struct sockaddr *)&addr, sizeof(addr));
+}
+
+static int xconnect_tcp(int port)
+{
+	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	addr.sin_port = htons(port);
 
-retry:
-	ret = connect(cd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-	if (ret < 0) {
-		if (cnt++ < 100) {
-			usleep(1*1000);
-			goto retry;
-		} else {
-			fprintf(stderr, "connect() to 127.0.0.1:%d failed: %m\n", port);
-			close(cd);
-		}
-	}
-
-	return cd;
+	return xconnect((struct sockaddr *)&addr, sizeof(addr));
 }
 
 static int send_cmd(int cd, struct service_command cmd)
@@ -84,10 +92,11 @@ static int send_cmd(int cd, struct service_command cmd)
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s -l PORT -p PID [-c -r]\n" \
+		"%s -l PORT|PATH -p PID [-c -r]\n" \
 		"options: \n" \
 		"  -h --help\t\thelp\n" \
-		"  -l --local-port\tTCP port number of localhost memcr service\n" \
+		"  -l --location\t\tTCP port number of localhost memcr service\n" \
+		"\t\t\t or filesystem path to memcr service UNIX socket\n" \
 		"  -p --pid\t\tprocess ID to be checkpointed / restored\n" \
 		"  -c --checkpoint\tsend checkpoint command to memcr service\n" \
 		"  -r --restore\t\tsend restore command to memcr service\n",
@@ -103,11 +112,12 @@ int main(int argc, char *argv[])
 	int port = -1;
 	int option_index;
 	struct service_command cmd = {0};
+	char *comm_location = NULL;
 	int pid = 0;
 
 	static struct option long_options[] = {
 		{ "help",       0,  0,  0},
-		{ "local-port", 1,  0,  0},
+		{ "location",   1,  0,  0},
 		{ "pid",        1,  0,  0},
 		{ "checkpoint", 0,  0,  0},
 		{ "restore",    0,  0,  0},
@@ -120,7 +130,7 @@ int main(int argc, char *argv[])
 				usage(argv[0], 0);
 				break;
 			case 'l':
-				port = atoi(optarg);
+				comm_location = optarg;
 				break;
 			case 'p':
 				pid = atoi(optarg);
@@ -137,7 +147,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!pid || !port) {
+	if (!pid || !comm_location) {
 		fprintf(stderr, "Incorrect arguments provided!\n");
 		usage(argv[0], 1);
 		return -1;
@@ -149,9 +159,17 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	cd = xconnect(port);
-	if (cd < 0)
+	port = atoi(comm_location);
+
+	if (port > 0)
+		cd = xconnect_tcp(port);
+	else
+		cd = xconnect_unix(comm_location);
+
+	if (cd < 0) {
+		fprintf(stderr, "Connection creation failed!\n");
 		return cd;
+	}
 
 	if (checkpoint) {
 		fprintf(stdout, "Will checkpoint %d.\n", pid);
