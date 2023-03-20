@@ -106,7 +106,6 @@ static int rss_file;
 
 #define PM_PAGE_FRAME_NUMBER_MASK	0x007fffffffffffff
 #define PM_PAGE_FILE_OR_SHARED_ANON	61
-#define PM_PAGE_SWAPPED			62
 #define PM_PAGE_PRESENT			63
 
 #define KPF_UNEVICTABLE			18	/* (since Linux 2.6.31) */
@@ -920,7 +919,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		if (vma->flags & (FLAG_ANON | FLAG_HEAP | FLAG_STACK)) {
 			struct vm_region vmr;
 
-			if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
+			if (map & BIT(PM_PAGE_PRESENT)) {
 				uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
 
 				nrpages_dumpable++;
