@@ -176,7 +176,7 @@ static int parasite_status_wait(int *status)
 		ts.tv_sec += 1;
 
 		pthread_mutex_lock(&parasite_status_lock);
-		while (!parasite_status_changed && ret == 0)
+		while (!parasite_status_changed && (ret == 0 || ret == ETIMEDOUT))
 			ret = pthread_cond_timedwait(&parasite_status_cond, &parasite_status_lock, &ts);
 		if (!ret)
 			*status = parasite_status;
