@@ -921,14 +921,16 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			struct vm_region vmr;
 
 			if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
-				uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
-
 				nrpages_dumpable++;
 
-				ret = page_unevictable(pfn);
-				if (ret) {
-					nrpages_unevictable++;
-					continue;
+				if (map & (BIT(PM_PAGE_PRESENT))) {
+					uint64_t pfn = map & PM_PAGE_FRAME_NUMBER_MASK;
+
+					ret = page_unevictable(pfn);
+					if (ret) {
+						nrpages_unevictable++;
+						continue;
+					}
 				}
 
 				if (!region_start)
