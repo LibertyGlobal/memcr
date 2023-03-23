@@ -46,6 +46,10 @@
 #include <sys/param.h> /* MIN(), MAX() */
 #include <sys/mman.h>
 
+#ifdef DUMP_COMPRESSION_LZ4
+#include <lz4.h>
+#endif
+
 #include "memcr.h"
 #include "arch/cpu.h"
 #include "arch/enter.h"
@@ -124,6 +128,10 @@ static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
 #define MAX_VM_REGION_SIZE (256 * PAGE_SIZE)
+
+#ifdef DUMP_COMPRESSION_LZ4
+#define MAX_LZ4_DST_SIZE LZ4_compressBound(MAX_VM_REGION_SIZE)
+#endif
 
 static pid_t parasite_pid;
 static pid_t parasite_pid_clone;
@@ -806,6 +814,50 @@ static int target_mprotect(int cd, unsigned long addr, size_t len, unsigned long
 	return 0;
 }
 
+#ifdef DUMP_COMPRESSION_LZ4
+static int compress_lz4_and_write(const char *buf, unsigned long len, int fd)
+{
+	int ret, dstSize;
+	char compr[MAX_LZ4_DST_SIZE];
+
+	dstSize = LZ4_compress_default(buf, compr, len, MAX_LZ4_DST_SIZE);
+	fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize);
+	if (dstSize == 0)
+		return -1;
+
+	ret = _write(fd, &dstSize, sizeof(dstSize));
+	if (ret != sizeof(dstSize))
+		return -1;
+
+	ret = _write(fd, &compr, dstSize);
+	if (ret != dstSize)
+		return -1;
+
+	return 0;
+}
+
+static int read_and_decompress_lz4(char* buf, int fd)
+{
+	int ret, srcSize;
+	char compr[MAX_LZ4_DST_SIZE];
+
+	ret = _read(fd, &srcSize, sizeof(srcSize));
+	if (ret != sizeof(srcSize))
+		return -1;
+
+	ret = _read(fd, &compr, srcSize);
+	if (ret != srcSize)
+		return -1;
+
+	ret = LZ4_decompress_safe(compr, buf, srcSize, MAX_VM_REGION_SIZE);
+	fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+#endif
+
 static int get_mem_region(int md, int cd, unsigned long addr, unsigned long len, int fd)
 {
 	int ret;
@@ -827,9 +879,15 @@ static int get_mem_region(int md, int cd, unsigned long addr, unsigned long len,
 	if (ret != len)
 		return -1;
 
+#ifdef DUMP_COMPRESSION_LZ4
+	ret = compress_lz4_and_write(buf, len, fd);
+	if (ret)
+		return ret;
+#else
 	ret = _write(fd, &buf, len);
 	if (ret != len)
 		return -1;
+#endif
 
 	ret = parasite_write(cd, &req, sizeof(req));
 	if (ret != sizeof(req))
@@ -859,9 +917,15 @@ static int get_target_mem_region(int cd, unsigned long addr, unsigned long len, 
 	if (ret != len)
 		return -1;
 
+#ifdef DUMP_COMPRESSION_LZ4
+	ret = compress_lz4_and_write(buf, len, fd);
+	if (ret)
+		return ret;
+#else
 	ret = _write(fd, &buf, len);
 	if (ret != len)
 		return -1;
+#endif
 
 	return 0;
 }
@@ -1162,9 +1226,15 @@ static int target_set_pages(pid_t pid)
 		if (ret == 0)
 			break;
 
+#ifdef DUMP_COMPRESSION_LZ4
+		ret = read_and_decompress_lz4(buf, fd);
+		if (ret)
+			break;
+#else
 		ret = _read(fd, &buf, vmr.len);
 		if (ret == 0)
 			break;
+#endif
 
 		req.vmr = vmr;
 		req.flags = 0;
