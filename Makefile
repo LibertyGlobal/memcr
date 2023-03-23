@@ -33,6 +33,11 @@ PCFLAGS = $(CFLAGS)
 
 LDFLAGS = -lpthread
 
+ifeq ($(MEMCR_DUMP_COMPRESSION_LZ4), 1)
+    MCFLAGS += -DDUMP_COMPRESSION_LZ4
+    LDFLAGS += -llz4
+endif
+
 ifeq ("$(origin O)", "command line")
     GCC_O = $(O)
 endif
