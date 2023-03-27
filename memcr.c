@@ -1804,7 +1804,7 @@ static int send_response_to_service(int fd, int status)
 	int ret;
 	struct service_response svc_resp;
 
-	svc_resp.resp_code = status ? MEMCR_ERROR : MEMCR_OK;
+	svc_resp.resp_code = status ? MEMCR_ERROR_GENERAL : MEMCR_OK;
 
 	fprintf(stdout, "[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
 	ret = _write(fd, &svc_resp, sizeof(struct service_response));
@@ -1968,7 +1968,7 @@ static void checkpoint_procedure_service(int checkpointSocket, int cd)
 		send_response_to_client(cd, svc_resp.resp_code);
 	} else {
 		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
-		send_response_to_client(cd, MEMCR_ERROR);
+		send_response_to_client(cd, MEMCR_ERROR_GENERAL);
 	}
 }
 
@@ -2000,7 +2000,7 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd)
 
 	if (-1 == ret || MEMCR_OK != svc_resp.resp_code) {
 		fprintf(stderr, "[!] There were errors during restore procedure, sending ERROR response to client!\n");
-		send_response_to_client(cd, MEMCR_ERROR);
+		send_response_to_client(cd, MEMCR_ERROR_GENERAL);
 	} else {
 		fprintf(stdout, "[i] Restore procedure finished. Sending OK response to client.\n");
 		send_response_to_client(cd, MEMCR_OK);
@@ -2042,7 +2042,7 @@ static int handle_connection(int cd)
 
 			if (is_pid_checkpointed(svc_cmd.pid)) {
 				fprintf(stdout, "[i] Process %d is already checkpointed!\n", svc_cmd.pid);
-				send_response_to_client(cd, MEMCR_ERROR);
+				send_response_to_client(cd, MEMCR_INVALID_PID);
 				break;
 			}
 
@@ -2076,7 +2076,7 @@ static int handle_connection(int cd)
 
 			if (!is_pid_checkpointed(svc_cmd.pid)) {
 				fprintf(stdout, "[i] Process %d is not checkpointed!\n", svc_cmd.pid);
-				send_response_to_client(cd, MEMCR_ERROR);
+				send_response_to_client(cd, MEMCR_INVALID_PID);
 				break;
 			}
 

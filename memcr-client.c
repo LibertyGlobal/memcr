@@ -86,7 +86,7 @@ static int send_cmd(int cd, struct service_command cmd)
 
 	fprintf(stdout, "Procedure finished with %s status.\n", MEMCR_OK == resp.resp_code ? "OK" : "ERROR");
 
-	return 0;
+	return resp.resp_code;
 }
 
 static void usage(const char *name, int status)

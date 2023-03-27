@@ -48,7 +48,8 @@ struct service_command {
 
 typedef enum {
 	MEMCR_OK = 0,
-	MEMCR_ERROR = -1
+	MEMCR_ERROR_GENERAL = -1,
+	MEMCR_INVALID_PID = -2
 } memcr_svc_response;
 
 struct service_response {
