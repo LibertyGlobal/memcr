@@ -1322,7 +1322,15 @@ static int cmd_checkpoint(pid_t pid)
 	ret = get_target_pages(pid, vmas, nr_vmas);
 	if (ret) {
 		fprintf(stderr, "get_target_pages() failed\n");
-		exit(1);
+
+		char path[PATH_MAX];
+		snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
+		unlink(path);
+
+		if (parasite_socket_dir)
+			cleanup_socket(pid);
+
+		return ret;
 	}
 
 	fprintf(stdout, "[i] download took %lu ms\n", diff_ms(&ts));
@@ -1708,9 +1716,8 @@ static int execute_parasite_checkpoint(pid_t pid)
 
 	parasite_watch(parasite_pid);
 
-	cmd_checkpoint(pid);
-
-	return 0;
+	ret = cmd_checkpoint(pid);
+	return ret;
 }
 
 static int execute_parasite_restore(pid_t pid)
@@ -1883,8 +1890,8 @@ static int checkpoint_worker(pid_t pid)
 
 	ret = execute_parasite_checkpoint(pid);
 	if (ret) {
-		fprintf(stderr, "[%d] Parasite checkpoint failed!\n", getpid());
-		unseize_target();
+		fprintf(stderr, "[%d] Parasite checkpoint failed! Killing the target app...\n", getpid());
+		kill(pid, SIGKILL);
 		return ret;
 	}
 
@@ -1959,12 +1966,12 @@ static void checkpoint_procedure_service(int checkpointSocket, int cd)
 	int ret;
 	struct service_response svc_resp;
 
-	fprintf(stdout, "[+] Parent waiting for worker checkpoint...\n");
+	fprintf(stdout, "[+] Service waiting for worker checkpoint...\n");
 	ret = _read(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
 	close(checkpointSocket);
 
 	if (ret == sizeof(svc_resp)) {
-		fprintf(stdout, "[+] Parent received checkpoint response, informing client...\n");
+		fprintf(stdout, "[+] Service received checkpoint response, informing client...\n");
 		send_response_to_client(cd, svc_resp.resp_code);
 	} else {
 		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
