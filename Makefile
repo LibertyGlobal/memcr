@@ -31,7 +31,7 @@ MCFLAGS = $(CFLAGS) -g
 # parasite CFLAGS
 PCFLAGS = $(CFLAGS)
 
-LDFLAGS = -lpthread
+LDFLAGS = -lpthread -lcrypto
 
 ifeq ($(MEMCR_DUMP_COMPRESSION_LZ4), 1)
     MCFLAGS += -DDUMP_COMPRESSION_LZ4
