@@ -129,6 +129,8 @@ static int kpageflags_fd;
 static pid_t tids[MAX_THREADS];
 static int nr_threads;
 
+#define SERVICE_MODE_SELECT_TIMEOUT_MS	100
+
 #define MAX_VMAS			4096
 static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
@@ -290,6 +292,48 @@ static int parasite_status_ok(void)
 	return ret;
 }
 
+static void create_filesystem_socketname(char * addr, int addr_size, pid_t pid)
+{
+	snprintf(addr, addr_size, "%s/memcr%u", parasite_socket_dir, pid);
+}
+
+static void create_abstract_socketname(char * addr, int addr_size, pid_t pid)
+{
+	snprintf(addr, addr_size, "#memcr%u", pid);
+}
+
+static void cleanup_socket(int pid)
+{
+	char socketaddr[108];
+
+	create_filesystem_socketname(socketaddr, sizeof(socketaddr), pid);
+	unlink(socketaddr);
+}
+
+static void cleanup_pid(pid_t pid)
+{
+	char path[PATH_MAX];
+	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
+	unlink(path);
+
+	if (parasite_socket_dir)
+		cleanup_socket(pid);
+}
+
+static void cleanup_checkpointed_pids(void)
+{
+	fprintf(stdout, "[i] Terminating checkpointed processes\n");
+	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
+		if (checkpointed_pids[i] != PID_INVALID) {
+			fprintf(stdout, "[i] Killing PID %d\n", checkpointed_pids[i]);
+			kill(checkpointed_pids[i], SIGKILL);
+			cleanup_pid(checkpointed_pids[i]);
+			checkpointed_pids[i] = PID_INVALID;
+			checkpoint_workers[i] = PID_INVALID;
+		}
+	}
+}
+
 static int is_pid_checkpointed(pid_t pid)
 {
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
@@ -329,6 +373,7 @@ static void clear_pid_on_worker_exit(pid_t worker)
 {
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpoint_workers[i] == worker) {
+			cleanup_pid(checkpointed_pids[i]);
 			checkpointed_pids[i] = PID_INVALID;
 			checkpoint_workers[i] = PID_INVALID;
 		}
@@ -485,16 +530,6 @@ static int unseize_target(void)
 	nr_threads = 0;
 
 	return ret;
-}
-
-static inline void create_filesystem_socketname(char * addr, int addr_size, pid_t pid)
-{
-	snprintf(addr, addr_size, "%s/memcr%u", parasite_socket_dir, pid);
-}
-
-static inline void create_abstract_socketname(char * addr, int addr_size, pid_t pid)
-{
-	snprintf(addr, addr_size, "#memcr%u", pid);
 }
 
 static int parasite_connect(pid_t pid)
@@ -1357,7 +1392,6 @@ static int target_set_pages(pid_t pid)
 out:
 	close(cd);
 	close(fd);
-	unlink(path);
 	return ret;
 }
 
@@ -1376,14 +1410,6 @@ static int target_cmd_end(int pid)
 
 	close(cd);
 	return ret;
-}
-
-static void cleanup_socket(int pid)
-{
-	char socketaddr[108];
-
-	create_filesystem_socketname(socketaddr, sizeof(socketaddr), pid);
-	unlink(socketaddr);
 }
 
 static long diff_ms(struct timespec *ts)
@@ -1431,14 +1457,6 @@ static int cmd_checkpoint(pid_t pid)
 
 	if (ret) {
 		fprintf(stderr, "get_target_pages() failed\n");
-
-		char path[PATH_MAX];
-		snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
-		unlink(path);
-
-		if (parasite_socket_dir)
-			cleanup_socket(pid);
-
 		return ret;
 	}
 
@@ -1457,9 +1475,6 @@ static int cmd_restore(pid_t pid)
 	struct timespec ts;
 
 	if (!parasite_status_ok()) {
-		if (parasite_socket_dir)
-			cleanup_socket(pid);
-
 		return 1;
 	}
 
@@ -1492,12 +1507,9 @@ static int cmd_restore(pid_t pid)
 			|| (md5_checkpoint_digest_len != md5_restore_digest_len)
 			|| (memcmp(md5_checkpoint_digest, md5_restore_digest, md5_restore_digest_len) != 0) ) {
 			printf("[-] dump checksum do not match!\n");
-			if (parasite_socket_dir)
-				cleanup_socket(pid);
 
 			fprintf(stderr, "[%d] Restore failed! Killing the target app...\n", getpid());
 			kill(pid, SIGKILL);
-
 			return 1;
 		}
 	}
@@ -1511,10 +1523,6 @@ static int cmd_restore(pid_t pid)
 	 * handled once previous one (set pages) is done.
 	 */
 	target_cmd_end(pid);
-
-	if (parasite_socket_dir) {
-		cleanup_socket(pid);
-	}
 
 	return 0;
 }
@@ -2035,6 +2043,7 @@ static int checkpoint_worker(pid_t pid)
 	if (ret) {
 		fprintf(stderr, "[%d] Parasite checkpoint failed! Killing the target app...\n", getpid());
 		kill(pid, SIGKILL);
+		cleanup_pid(pid);
 		return ret;
 	}
 
@@ -2058,8 +2067,8 @@ static int restore_worker(int rd)
 
 	signal(SIGCHLD, SIG_DFL);
 	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
-
 	unseize_target();
+	cleanup_pid(post_checkpoint_cmd.pid);
 
 	return ret;
 }
@@ -2248,6 +2257,10 @@ static int service_mode(const char *listen_location)
 	int ret = 0;
 	int csd, cd;
 	int listen_port = atoi(listen_location);
+	int flags;
+	fd_set readfds;
+	struct timeval tv;
+	int errsv;
 
 	if (listen_port > 0)
 		csd = setup_listen_tcp_socket(listen_port);
@@ -2257,21 +2270,49 @@ static int service_mode(const char *listen_location)
 	if (csd < 0)
 		return -1;
 
+	flags = fcntl(csd, F_GETFL);
+	fcntl(csd, F_SETFL, flags | O_NONBLOCK);
+
 	fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
 
 	while (!interrupted) {
-		cd = accept(csd, NULL, NULL);
-		if (cd < 0)
-			return cd;
+		FD_ZERO(&readfds);
+		FD_SET(csd, &readfds);
 
-		ret = handle_connection(cd);
-		close(cd);
-		fprintf(stdout, "[+] Request handled...\n");
+		tv.tv_sec = SERVICE_MODE_SELECT_TIMEOUT_MS/1000;
+		tv.tv_usec = (SERVICE_MODE_SELECT_TIMEOUT_MS%1000)*1000;
+
+		ret = select(csd+1, &readfds , NULL , NULL , &tv);
+		errsv = errno;
+		if ((ret < 0) && (errsv != EINTR)) {
+			fprintf(stderr, "[-] Error on socket select: %d\n", errsv);
+			interrupted = 1;
+			continue;
+		}
+
+		if(ret <= 0) /* Select timeout or EINTR */
+			continue;
+
+		cd = accept(csd, NULL, NULL);
+		if (cd >= 0) {
+			ret = handle_connection(cd);
+			close(cd);
+			fprintf(stdout, "[+] Request handled...\n");
+			continue;
+		}
+
+		errsv = errno;
+		if (errsv != EAGAIN || errsv != EWOULDBLOCK) {
+			fprintf(stdout, "[-] Error on socket accept: %d\n", errsv);
+			interrupted = 1;
+		}
 	}
 
 	close(csd);
 	if (!listen_port)
 		unlink(listen_location);
+
+	cleanup_checkpointed_pids();
 
 	return ret;
 }
@@ -2308,6 +2349,7 @@ static int user_interactive_mode(pid_t pid)
 
 out:
 	unseize_target();
+	cleanup_pid(pid);
 
 	return ret;
 }
