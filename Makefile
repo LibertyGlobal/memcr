@@ -31,11 +31,16 @@ MCFLAGS = $(CFLAGS) -g
 # parasite CFLAGS
 PCFLAGS = $(CFLAGS)
 
-LDFLAGS = -lpthread -lcrypto
+LDFLAGS = -lpthread
 
-ifeq ($(MEMCR_DUMP_COMPRESSION_LZ4), 1)
-    MCFLAGS += -DDUMP_COMPRESSION_LZ4
+ifeq ($(COMPRESS_LZ4), 1)
+    MCFLAGS += -DCOMPRESS_LZ4
     LDFLAGS += -llz4
+endif
+
+ifeq ($(CHECKSUM_MD5), 1)
+    MCFLAGS += -DCHECKSUM_MD5
+    LDFLAGS += -lcrypto
 endif
 
 ifeq ("$(origin O)", "command line")

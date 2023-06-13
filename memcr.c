@@ -45,15 +45,18 @@
 #include <sys/user.h>
 #include <sys/param.h> /* MIN(), MAX() */
 #include <sys/mman.h>
+
+#ifdef COMPRESS_LZ4
+#include <lz4.h>
+#endif
+
+#ifdef CHECKSUM_MD5
 #include <openssl/opensslv.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #include <openssl/evp.h>
 #else
 #include <openssl/md5.h>
 #endif
-
-#ifdef DUMP_COMPRESSION_LZ4
-#include <lz4.h>
 #endif
 
 #include "memcr.h"
@@ -111,6 +114,12 @@ static char *parasite_socket_dir;
 static int no_wait;
 static int proc_mem;
 static int rss_file;
+#ifdef COMPRESS_LZ4
+static int compress;
+#endif
+#ifdef CHECKSUM_MD5
+static int checksum;
+#endif
 
 #define BIT(x) (1ULL << x)
 
@@ -137,7 +146,7 @@ static int nr_vmas;
 
 #define MAX_VM_REGION_SIZE (256 * PAGE_SIZE)
 
-#ifdef DUMP_COMPRESSION_LZ4
+#ifdef COMPRESS_LZ4
 #define MAX_LZ4_DST_SIZE LZ4_compressBound(MAX_VM_REGION_SIZE)
 #endif
 
@@ -163,6 +172,7 @@ static unsigned long parasite_status_changed;
 static pid_t checkpointed_pids[CHECKPOINTED_PIDS_LIMIT];
 static pid_t checkpoint_workers[CHECKPOINTED_PIDS_LIMIT];
 
+#ifdef CHECKSUM_MD5
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
 #define MD5_DIGEST_SIZE		EVP_MAX_MD_SIZE
 static EVP_MD_CTX *md5_checkpoint_ctx;
@@ -177,7 +187,6 @@ static unsigned char md5_checkpoint_digest[MD5_DIGEST_SIZE];
 static unsigned int md5_checkpoint_digest_len;
 static unsigned char md5_restore_digest[MD5_DIGEST_SIZE];
 static unsigned int md5_restore_digest_len;
-static int md5_enabled;
 
 static void md5_init(void *ctx)
 {
@@ -233,6 +242,7 @@ static void md5_final(unsigned char *md, unsigned int *len, void *ctx)
 	MD5_Final(md, ctx);
 #endif
 }
+#endif
 
 static void parasite_status_signal(pid_t pid, int status)
 {
@@ -926,14 +936,14 @@ static int target_mprotect(int cd, unsigned long addr, size_t len, unsigned long
 	return 0;
 }
 
-#ifdef DUMP_COMPRESSION_LZ4
+#ifdef COMPRESS_LZ4
 static int compress_lz4_and_write(const char *buf, unsigned long len, int fd)
 {
 	int ret, dstSize;
 	char compr[MAX_LZ4_DST_SIZE];
 
 	dstSize = LZ4_compress_default(buf, compr, len, MAX_LZ4_DST_SIZE);
-	fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize);
+	/* fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize); */
 	if (dstSize == 0)
 		return -1;
 
@@ -945,10 +955,12 @@ static int compress_lz4_and_write(const char *buf, unsigned long len, int fd)
 	if (ret != dstSize)
 		return -1;
 
-	if (md5_enabled) {
+#ifdef CHECKSUM_MD5
+	if (checksum) {
 		md5_update(&md5_checkpoint_ctx, &dstSize, sizeof(dstSize));
 		md5_update(&md5_checkpoint_ctx, compr, dstSize);
 	}
+#endif
 
 	return 0;
 }
@@ -966,13 +978,15 @@ static int read_and_decompress_lz4(char* buf, int fd)
 	if (ret != srcSize)
 		return -1;
 
-	if (md5_enabled) {
+#ifdef CHECKSUM_MD5
+	if (checksum) {
 		md5_update(&md5_restore_ctx, &srcSize, sizeof(srcSize));
 		md5_update(&md5_restore_ctx, compr, srcSize);
 	}
+#endif
 
 	ret = LZ4_decompress_safe(compr, buf, srcSize, MAX_VM_REGION_SIZE);
-	fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret);
+	/* fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret); */
 	if (ret < 0)
 		return ret;
 
@@ -1001,16 +1015,21 @@ static int get_mem_region(int md, int cd, unsigned long addr, unsigned long len,
 	if (ret != len)
 		return -1;
 
-#ifdef DUMP_COMPRESSION_LZ4
-	ret = compress_lz4_and_write(buf, len, fd);
-	if (ret)
-		return ret;
-#else
-	ret = _write(fd, &buf, len);
-	if (ret != len)
-		return -1;
+#ifdef COMPRESS_LZ4
+	if (compress) {
+		ret = compress_lz4_and_write(buf, len, fd);
+		if (ret)
+			return ret;
+	} else
+#endif
+	{
+		ret = _write(fd, &buf, len);
+		if (ret != len)
+			return -1;
+	}
 
-	if (md5_enabled)
+#ifdef CHECKSUM_MD5
+	if (checksum)
 		md5_update(&md5_checkpoint_ctx, buf, len);
 #endif
 
@@ -1042,16 +1061,21 @@ static int get_target_mem_region(int cd, unsigned long addr, unsigned long len, 
 	if (ret != len)
 		return -1;
 
-#ifdef DUMP_COMPRESSION_LZ4
-	ret = compress_lz4_and_write(buf, len, fd);
-	if (ret)
-		return ret;
-#else
-	ret = _write(fd, &buf, len);
-	if (ret != len)
-		return -1;
+#ifdef COMPRESS_LZ4
+	if (compress) {
+		ret = compress_lz4_and_write(buf, len, fd);
+		if (ret)
+			return ret;
+	} else
+#endif
+	{
+		ret = _write(fd, &buf, len);
+		if (ret != len)
+			return -1;
+	}
 
-	if (md5_enabled)
+#ifdef CHECKSUM_MD5
+	if (checksum)
 		md5_update(&md5_checkpoint_ctx, buf, len);
 #endif
 
@@ -1144,8 +1168,10 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			if (ret != sizeof(vmr))
 				return -1;
 
-			if (md5_enabled)
+#ifdef CHECKSUM_MD5
+			if (checksum)
 				md5_update(&md5_checkpoint_ctx, &vmr, sizeof(vmr));
+#endif
 
 			if (proc_mem) {
 				ret = get_mem_region(md, cd, region_start, region_length, fd);
@@ -1357,19 +1383,26 @@ static int target_set_pages(pid_t pid)
 		if (ret == 0)
 			break;
 
-		if (md5_enabled)
+#ifdef CHECKSUM_MD5
+		if (checksum)
 			md5_update(&md5_restore_ctx, &vmr, sizeof(vmr));
+#endif
 
-#ifdef DUMP_COMPRESSION_LZ4
-		ret = read_and_decompress_lz4(buf, fd);
-		if (ret)
-			break;
-#else
-		ret = _read(fd, &buf, vmr.len);
-		if (ret == 0)
-			break;
+#ifdef COMPRESS_LZ4
+		if (compress) {
+			ret = read_and_decompress_lz4(buf, fd);
+			if (ret)
+				break;
+		} else
+#endif
+		{
+			ret = _read(fd, &buf, vmr.len);
+			if (ret == 0)
+				break;
+		}
 
-		if (md5_enabled)
+#ifdef CHECKSUM_MD5
+		if (checksum)
 			md5_update(&md5_restore_ctx, buf, vmr.len);
 #endif
 
@@ -1445,15 +1478,19 @@ static int cmd_checkpoint(pid_t pid)
 	fprintf(stdout, "[+] mprotect off\n");
 	target_mprotect_off(pid);
 
-	if (md5_enabled)
+#ifdef CHECKSUM_MD5
+	if (checksum)
 		md5_init(&md5_checkpoint_ctx);
+#endif
 
 	fprintf(stdout, "[+] downloading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	ret = get_target_pages(pid, vmas, nr_vmas);
 
-	if (md5_enabled)
+#ifdef CHECKSUM_MD5
+	if (checksum)
 		md5_final(md5_checkpoint_digest, &md5_checkpoint_digest_len, &md5_checkpoint_ctx);
+#endif
 
 	if (ret) {
 		fprintf(stderr, "get_target_pages() failed\n");
@@ -1478,15 +1515,18 @@ static int cmd_restore(pid_t pid)
 		return 1;
 	}
 
-	if (md5_enabled)
+#ifdef CHECKSUM_MD5
+	if (checksum)
 		md5_init(&md5_restore_ctx);
+#endif
 
 	fprintf(stdout, "[+] uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	target_set_pages(pid);
 	fprintf(stdout, "[i] upload took %lu ms\n", diff_ms(&ts));
 
-	if (md5_enabled) {
+#ifdef CHECKSUM_MD5
+	if (checksum) {
 		md5_final(md5_restore_digest, &md5_restore_digest_len, &md5_restore_ctx);
 		unsigned char *b = md5_checkpoint_digest;
 		fprintf(stdout, "[+] checkpoint crc: ");
@@ -1513,6 +1553,7 @@ static int cmd_restore(pid_t pid)
 			return 1;
 		}
 	}
+#endif
 
 	fprintf(stdout, "[+] mprotect on\n");
 	target_mprotect_on(pid);
@@ -2359,19 +2400,25 @@ static void usage(const char *name, int status)
 	fprintf(status ? stderr : stdout,
 		"%s [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-f] [-c]\n" \
 		"options: \n" \
-		"  -h --help\thelp\n" \
-		"  -p --pid\ttarget processs pid\n" \
-		"  -d --dir\tdir where memory dump is stored (defaults to /tmp)\n" \
-		"  -S --parasite-socket-dir\tdir where socket to communicate with parasite is created\n" \
+		"  -h --help		help\n" \
+		"  -p --pid		target processs pid\n" \
+		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
+		"  -S --parasite-socket-dir dirwhere socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
-		"  -l --listen\twork as a service waiting for requests on a socket\n" \
+		"  -l --listen		twork as a service waiting for requests on a socket\n" \
 		"        -l PORT: TCP port number to listen for requests on\n" \
 		"        -l PATH: filesystem path for UNIX domain socket file (will be created)\n" \
-		"  -n --no-wait\tno wait for key press\n" \
-		"  -m --proc-mem\tget pages from /proc/pid/mem\n" \
-		"  -f --rss-file\tinclude file mapped memory\n" \
-		"  -c --checksum\tenable md5 checksum for memory dump\n",
+		"  -n --no-wait		no wait for key press\n" \
+		"  -m --proc-mem	get pages from /proc/pid/mem\n" \
+		"  -f --rss-file	include file mapped memory\n",
 		name);
+#ifdef COMPRESS_LZ4
+	fprintf(status ? stderr : stdout, "  -z --compress	compress memory dump\n");
+#endif
+#ifdef CHECKSUM_MD5
+	fprintf(status ? stderr : stdout, "  -c --checksum	enable md5 checksum for memory dump\n");
+#endif
+
 	exit(status);
 }
 
@@ -2403,14 +2450,19 @@ int main(int argc, char *argv[])
 		{ "no-wait",			0,	0,	0},
 		{ "proc-mem",			0,	0,	0},
 		{ "rss-file",			0,	0,	0},
+#ifdef COMPRESSLZ4
+		{ "compress",			0,	0,	0},
+#endif
+#ifdef CHECKSUM_MD5
 		{ "checksum",			0,	0,	0},
+#endif
 		{ NULL,			0,	0,	0}
 	};
 
 	dump_dir = "/tmp";
 	parasite_socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmfc", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmfzc", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2436,9 +2488,16 @@ int main(int argc, char *argv[])
 			case 'f':
 				rss_file = 1;
 				break;
-			case 'c':
-				md5_enabled = 1;
+#ifdef COMPRESS_LZ4
+			case 'z':
+				compress = 1;
 				break;
+#endif
+#ifdef CHECKSUM_MD5
+			case 'c':
+				checksum = 1;
+				break;
+#endif
 			default: /* '?' */
 				usage(argv[0], 1);
 		}
