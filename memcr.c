@@ -2399,13 +2399,13 @@ static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
 		"%s [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-f] [-c]\n" \
-		"options: \n" \
+		"options:\n" \
 		"  -h --help		help\n" \
 		"  -p --pid		target processs pid\n" \
 		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir dirwhere socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
-		"  -l --listen		twork as a service waiting for requests on a socket\n" \
+		"  -l --listen		work as a service waiting for requests on a socket\n" \
 		"        -l PORT: TCP port number to listen for requests on\n" \
 		"        -l PATH: filesystem path for UNIX domain socket file (will be created)\n" \
 		"  -n --no-wait		no wait for key press\n" \

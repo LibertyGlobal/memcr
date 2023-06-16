@@ -138,4 +138,16 @@ $(B)/memcr-client: $(B)/memcr-client.o
 clean:
 	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client
 
-.PHONY: all clean
+help:
+	@echo 'Clean target:'
+	@echo '  clean          - remove generated files'
+	@echo ''
+	@echo 'Build targets:'
+	@echo '  all            - build all targets'
+	@echo '  memcr          - build memcr binary'
+	@echo ''
+	@echo 'Compilation options:'
+	@echo '  COMPRESS_LZ4=1 - compile in support for memory dump LZ4 compression'
+	@echo '  CHECKSUM_MD5=1 - compile in support for memory dump MD5 checksumming'
+
+.PHONY: all clean help
