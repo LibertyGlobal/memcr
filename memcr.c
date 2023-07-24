@@ -2442,21 +2442,21 @@ int main(int argc, char *argv[])
 	char *listen_location = NULL;
 
 	static struct option long_options[] = {
-		{ "help",			0,	0,	0},
-		{ "pid",			1,	0,	0},
-		{ "dir",			1,	0,	0},
-		{ "parasite-socket-dir",	1,	0,	0},
-		{ "listen",			1,	0,	0},
-		{ "no-wait",			0,	0,	0},
-		{ "proc-mem",			0,	0,	0},
-		{ "rss-file",			0,	0,	0},
+		{ "help",			0,	NULL,	'h'},
+		{ "pid",			1,	NULL,	'p'},
+		{ "dir",			1,	NULL,	'd'},
+		{ "parasite-socket-dir",	1,	NULL,	'S'},
+		{ "listen",			1,	NULL,	'l'},
+		{ "no-wait",			0,	NULL,	'n'},
+		{ "proc-mem",			0,	NULL,	'm'},
+		{ "rss-file",			0,	NULL,	'f'},
 #ifdef COMPRESSLZ4
-		{ "compress",			0,	0,	0},
+		{ "compress",			0,	NULL,	'z'},
 #endif
 #ifdef CHECKSUM_MD5
-		{ "checksum",			0,	0,	0},
+		{ "checksum",			0,	NULL,	'c'},
 #endif
-		{ NULL,			0,	0,	0}
+		{ NULL,				0,	NULL,	0}
 	};
 
 	dump_dir = "/tmp";
