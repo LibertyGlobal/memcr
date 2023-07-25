@@ -23,7 +23,9 @@ do_compile () {
 do_install () {
 	install -D -m 755 ${B}/memcr ${D}${bindir}/memcr
 	install -D -m 755 ${B}/memcr-client ${D}${bindir}/memcr-client
+	install -D -m 644 ${B}/libencrypt.so ${D}${libdir}/memcr/libencrypt.so
 }
 
 FILES_${PN} = "${bindir}/memcr"
-FILES_${PN} += " ${bindir}/memcr-client"
+FILES_${PN} += "${bindir}/memcr-client"
+FILES_${PN} += "${libdir}/memcr/libencrypt.so"
