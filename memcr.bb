@@ -17,7 +17,7 @@ PV = "git${SRCPV}"
 S = "${WORKDIR}/git"
 
 do_compile () {
-	oe_runmake COMPRESS_LZ4=1 CHECKSUM_MD5=1
+	oe_runmake COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
 }
 
 do_install () {
