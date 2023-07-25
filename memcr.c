@@ -114,12 +114,8 @@ static char *parasite_socket_dir;
 static int no_wait;
 static int proc_mem;
 static int rss_file;
-#ifdef COMPRESS_LZ4
 static int compress;
-#endif
-#ifdef CHECKSUM_MD5
 static int checksum;
-#endif
 
 #define BIT(x) (1ULL << x)
 
@@ -2420,27 +2416,23 @@ out:
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-f] [-c]\n" \
+		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e]\n" \
 		"options:\n" \
 		"  -h --help		help\n" \
 		"  -p --pid		target processs pid\n" \
 		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
-		"  -S --parasite-socket-dir dirwhere socket to communicate with parasite is created\n" \
+		"  -S --parasite-socket-dir dir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
 		"  -l --listen		work as a service waiting for requests on a socket\n" \
 		"        -l PORT: TCP port number to listen for requests on\n" \
 		"        -l PATH: filesystem path for UNIX domain socket file (will be created)\n" \
 		"  -n --no-wait		no wait for key press\n" \
-		"  -m --proc-mem	get pages from /proc/pid/mem\n" \
-		"  -f --rss-file	include file mapped memory\n",
+		"  -m --proc-mem		get pages from /proc/pid/mem\n" \
+		"  -f --rss-file		include file mapped memory\n" \
+		"  -z --compress		compress memory dump\n" \
+		"  -c --checksum		enable md5 checksum for memory dump\n" \
+		"  -e --encrypt		enable encryption of memory dump\n",
 		name);
-#ifdef COMPRESS_LZ4
-	fprintf(status ? stderr : stdout, "  -z --compress	compress memory dump\n");
-#endif
-#ifdef CHECKSUM_MD5
-	fprintf(status ? stderr : stdout, "  -c --checksum	enable md5 checksum for memory dump\n");
-#endif
-	fprintf(status ? stderr : stdout, "  -e --encrypt	encrypt library options (\"help\" for details)\n");
 
 	exit(status);
 }
@@ -2475,12 +2467,8 @@ int main(int argc, char *argv[])
 		{ "no-wait",			0,	NULL,	'n'},
 		{ "proc-mem",			0,	NULL,	'm'},
 		{ "rss-file",			0,	NULL,	'f'},
-#ifdef COMPRESSLZ4
 		{ "compress",			0,	NULL,	'z'},
-#endif
-#ifdef CHECKSUM_MD5
 		{ "checksum",			0,	NULL,	'c'},
-#endif
 		{ "encrypt",			2,	0,	'e'},
 		{ NULL,				0,	NULL,	0}
 	};
@@ -2514,16 +2502,18 @@ int main(int argc, char *argv[])
 			case 'f':
 				rss_file = 1;
 				break;
-#ifdef COMPRESS_LZ4
 			case 'z':
+#ifndef COMPRESS_LZ4
+				die("not enabled, recompile with COMPRESS_LZ4=1\n");
+#endif
 				compress = 1;
 				break;
-#endif
-#ifdef CHECKSUM_MD5
 			case 'c':
+#ifndef CHECKSUM_MD5
+				die("not enabled, recompile with CHECKSUM_MD5=1\n");
+#endif
 				checksum = 1;
 				break;
-#endif
 			case 'e':
 				encrypt = 1;
 				if (optarg)
