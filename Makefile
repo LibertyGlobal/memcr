@@ -43,6 +43,11 @@ ifeq ($(CHECKSUM_MD5), 1)
     LDFLAGS += -lcrypto
 endif
 
+ifeq ($(ENCRYPT), 1)
+    # required for shared library preloading
+    MCFLAGS += -fPIC
+endif
+
 ifeq ("$(origin O)", "command line")
     GCC_O = $(O)
 endif
@@ -99,6 +104,11 @@ B ?= .
 
 all: $(B)/memcr $(B)/memcr-client
 
+ifeq ($(ENCRYPT), 1)
+all: $(B)/libencrypt.so
+endif
+
+
 $(B)/parasite-head.o: arch/$(ARCH)/parasite-head.S
 	$(CC) $(PCFLAGS) -O0 -c $< -o $@
 
@@ -128,15 +138,27 @@ $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
 
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
 	$(CC) $(MCFLAGS) $^ $(LDFLAGS) -o $@
+	@stat -c "-> %n: %s bytes <-" $@
+	@size $@
+
 
 $(B)/memcr-client.o: memcr-client.c
 	$(CC) $(CFLAGS) -I$(B) -c $< -o $@
 
 $(B)/memcr-client: $(B)/memcr-client.o
 	$(CC) $(CFLAGS) $^ -o $@
+	@stat -c "-> %n: %s bytes <-" $@
+	@size $@
+
+
+$(B)/libencrypt.so: libencrypt.c
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-soname,$(@F) $^ -lcrypto -o $@
+	@stat -c "-> %n: %s bytes <-" $@
+	@size $@
+
 
 clean:
-	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client
+	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client $(B)/libencrypt.so
 
 help:
 	@echo 'Clean target:'
@@ -149,5 +171,6 @@ help:
 	@echo 'Compilation options:'
 	@echo '  COMPRESS_LZ4=1 - compile in support for memory dump LZ4 compression'
 	@echo '  CHECKSUM_MD5=1 - compile in support for memory dump MD5 checksumming'
+	@echo '  ENCRYPT=1      - compile libencrypt.so that can be preloaded for memcr'
 
 .PHONY: all clean help
