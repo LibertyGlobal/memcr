@@ -167,6 +167,17 @@ static unsigned long parasite_status_changed;
  */
 #define SI_EVENT(si_code)	(((si_code) & 0xFF00) >> 8)
 
+/*
+ * These functions are used for interacting with a dump file and are declared
+ * as weak symbols so that a shared library can provide them.
+ */
+int __attribute__((weak)) lib__open(const char *pathname, int flags, mode_t mode);
+int __attribute__((weak)) lib__close(int fd);
+int __attribute__((weak)) lib__read(int fd, void *buf, size_t count);
+int __attribute__((weak)) lib__write(int fd, const void *buf, size_t count);
+int __attribute__((weak)) lib__init(int enable, const char *arg);
+int __attribute__((weak)) lib__fini(void);
+
 #define CHECKPOINTED_PIDS_LIMIT 16
 #define PID_INVALID		0
 static pid_t checkpointed_pids[CHECKPOINTED_PIDS_LIMIT];
@@ -665,6 +676,150 @@ static int _write(int fd, const void *buf, size_t count)
 	return __write(fd, buf, count, NULL);
 }
 
+static int dump_open(const char *pathname, int flags, mode_t mode)
+{
+	if (lib__open)
+		return lib__open(pathname, flags, mode);
+
+	return open(pathname, flags, mode);
+}
+
+static int dump_close(int fd)
+{
+	if (lib__close)
+		return lib__close(fd);
+
+	return close(fd);
+}
+
+static int dump_read(int fd, void *buf, size_t count)
+{
+	int ret;
+
+	if (lib__read)
+		ret = lib__read(fd, buf, count);
+	else
+		ret = __read(fd, buf, count, NULL);
+
+#ifdef CHECKSUM_MD5
+	if (checksum && ret > 0)
+		md5_update(&md5_restore_ctx, buf, count);
+#endif
+
+	return ret;
+}
+
+static int dump_write(int fd, const void *buf, size_t count)
+{
+	int ret;
+
+	if (lib__write)
+		ret = lib__write(fd, buf, count);
+	else
+		ret = __write(fd, buf, count, NULL);
+
+#ifdef CHECKSUM_MD5
+	if (checksum && ret > 0)
+		md5_update(&md5_checkpoint_ctx, buf, count);
+#endif
+
+	return ret;
+}
+
+static int vm_region_valid(const struct vm_region *vmr)
+{
+	if (vmr->addr & (PAGE_SIZE - 1)) {
+		fprintf(stderr, "[-] vm region addr %lx is not page aligned (off by 0x%lx)\n", vmr->addr, vmr->addr & (PAGE_SIZE - 1));
+		return 0;
+	}
+
+	if (vmr->len % PAGE_SIZE) {
+		fprintf(stderr, "[-] vm region len %ld is not multiple of page size %d\n", vmr->len, (int)PAGE_SIZE);
+		return 0;
+	}
+
+	return 1;
+}
+
+static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
+{
+	int ret;
+
+	ret = dump_read(fd, vmr, sizeof(struct vm_region));
+	if (ret != sizeof(struct vm_region))
+		return ret;
+
+	if (!vm_region_valid(vmr))
+		return -1;
+
+#ifdef COMPRESS_LZ4
+	if (compress) {
+		int src_size;
+		char src[MAX_LZ4_DST_SIZE];
+
+		ret = dump_read(fd, &src_size, sizeof(src_size));
+		if (ret != sizeof(src_size))
+			return -1;
+
+		ret = dump_read(fd, src, src_size);
+		if (ret != src_size)
+			return -1;
+
+		ret = LZ4_decompress_safe(src, buf, src_size, MAX_VM_REGION_SIZE);
+		/* fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret); */
+		if (ret <= 0)
+			return -1;
+	} else
+#endif
+	{
+		ret = dump_read(fd, buf, vmr->len);
+		if (ret != vmr->len)
+			return -1;
+	}
+
+	return ret;
+}
+
+static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
+{
+	int ret;
+
+	if (!vm_region_valid(vmr))
+		return -1;
+
+	ret = dump_write(fd, vmr, sizeof(struct vm_region));
+	if (ret != sizeof(struct vm_region))
+		return -1;
+
+#ifdef COMPRESS_LZ4
+	if (compress) {
+		char dst[MAX_LZ4_DST_SIZE];
+		int dst_size;
+
+		dst_size = LZ4_compress_default(buf, dst, vmr->len, MAX_LZ4_DST_SIZE);
+		/* fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize); */
+		if (dst_size <= 0)
+			return -1;
+
+		ret = dump_write(fd, &dst_size, sizeof(dst_size));
+		if (ret != sizeof(dst_size))
+			return -1;
+
+		ret = dump_write(fd, dst, dst_size);
+		if (ret != dst_size)
+			return -1;
+
+	} else
+#endif
+	{
+		ret = dump_write(fd, buf, vmr->len);
+		if (ret != vmr->len)
+			return -1;
+	}
+
+	return vmr->len;
+}
+
 static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen)
 {
 	int ret;
@@ -936,148 +1091,58 @@ static int target_mprotect(int cd, unsigned long addr, size_t len, unsigned long
 	return 0;
 }
 
-#ifdef COMPRESS_LZ4
-static int compress_lz4_and_write(const char *buf, unsigned long len, int fd)
-{
-	int ret, dstSize;
-	char compr[MAX_LZ4_DST_SIZE];
-
-	dstSize = LZ4_compress_default(buf, compr, len, MAX_LZ4_DST_SIZE);
-	/* fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize); */
-	if (dstSize == 0)
-		return -1;
-
-	ret = _write(fd, &dstSize, sizeof(dstSize));
-	if (ret != sizeof(dstSize))
-		return -1;
-
-	ret = _write(fd, compr, dstSize);
-	if (ret != dstSize)
-		return -1;
-
-#ifdef CHECKSUM_MD5
-	if (checksum) {
-		md5_update(&md5_checkpoint_ctx, &dstSize, sizeof(dstSize));
-		md5_update(&md5_checkpoint_ctx, compr, dstSize);
-	}
-#endif
-
-	return 0;
-}
-
-static int read_and_decompress_lz4(char* buf, int fd)
-{
-	int ret, srcSize;
-	char compr[MAX_LZ4_DST_SIZE];
-
-	ret = _read(fd, &srcSize, sizeof(srcSize));
-	if (ret != sizeof(srcSize))
-		return -1;
-
-	ret = _read(fd, &compr, srcSize);
-	if (ret != srcSize)
-		return -1;
-
-#ifdef CHECKSUM_MD5
-	if (checksum) {
-		md5_update(&md5_restore_ctx, &srcSize, sizeof(srcSize));
-		md5_update(&md5_restore_ctx, compr, srcSize);
-	}
-#endif
-
-	ret = LZ4_decompress_safe(compr, buf, srcSize, MAX_VM_REGION_SIZE);
-	/* fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret); */
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-#endif
-
-static int get_mem_region(int md, int cd, unsigned long addr, unsigned long len, int fd)
+static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, int fd)
 {
 	int ret;
 	unsigned long off;
 	char buf[MAX_VM_REGION_SIZE];
+	struct vm_region vmr = {
+		.addr = addr,
+		.len = len,
+	};
+	struct vm_region_req req;
+
+	if (proc_mem) { /* read region from /proc/pid/mem */
+		off = lseek(md, addr, SEEK_SET);
+		if (off != addr) {
+			fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
+			return -1;
+		}
+
+		ret = _read(md, &buf, len);
+		if (ret != len)
+			return -1;
+	}
+
+	/* request region from target if needed and madvise */
+	req.vmr = vmr;
+	req.flags = proc_mem ? 0 : VM_REGION_TX;
+	ret = parasite_write(cd, &req, sizeof(req));
+	if (ret != sizeof(req))
+		return -1;
+
+	if (!proc_mem) {
+		/* read requested region */
+		ret = parasite_read(cd, &buf, len);
+		if (ret != len)
+			return -1;
+	}
+
+	return write_vm_region(fd, &vmr, buf);
+}
+
+static int free_vm_region(int cd, unsigned long addr, unsigned long len)
+{
+	int ret;
 	struct vm_region_req req = {
 		.vmr.addr = addr,
 		.vmr.len = len,
 		.flags = 0,
 	};
 
-	off = lseek(md, addr, SEEK_SET);
-	if (off != addr) {
-		fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
-		return -1;
-	}
-
-	ret = _read(md, &buf, len);
-	if (ret != len)
-		return -1;
-
-#ifdef COMPRESS_LZ4
-	if (compress) {
-		ret = compress_lz4_and_write(buf, len, fd);
-		if (ret)
-			return ret;
-	} else
-#endif
-	{
-		ret = _write(fd, &buf, len);
-		if (ret != len)
-			return -1;
-	}
-
-#ifdef CHECKSUM_MD5
-	if (checksum)
-		md5_update(&md5_checkpoint_ctx, buf, len);
-#endif
-
 	ret = parasite_write(cd, &req, sizeof(req));
 	if (ret != sizeof(req))
 		return -1;
-
-	return 0;
-}
-
-static int get_target_mem_region(int cd, unsigned long addr, unsigned long len, char flags, int fd)
-{
-	int ret;
-	struct vm_region_req req = {
-		.vmr.addr = addr,
-		.vmr.len = len,
-		.flags = flags,
-	};
-	char buf[MAX_VM_REGION_SIZE];
-
-	ret = parasite_write(cd, &req, sizeof(req));
-	if (ret != sizeof(req))
-		return -1;
-
-	if (!(req.flags & VM_REGION_TX))
-		return 0;
-
-	ret = parasite_read(cd, &buf, len);
-	if (ret != len)
-		return -1;
-
-#ifdef COMPRESS_LZ4
-	if (compress) {
-		ret = compress_lz4_and_write(buf, len, fd);
-		if (ret)
-			return ret;
-	} else
-#endif
-	{
-		ret = _write(fd, &buf, len);
-		if (ret != len)
-			return -1;
-	}
-
-#ifdef CHECKSUM_MD5
-	if (checksum)
-		md5_update(&md5_checkpoint_ctx, buf, len);
-#endif
 
 	return 0;
 }
@@ -1134,8 +1199,6 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		}
 
 		if (vma->flags & (FLAG_ANON | FLAG_HEAP | FLAG_STACK)) {
-			struct vm_region vmr;
-
 			if (map & (BIT(PM_PAGE_PRESENT) | BIT(PM_PAGE_SWAPPED))) {
 				nrpages_dumpable++;
 
@@ -1161,27 +1224,9 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			if (!region_start)
 				continue;
 
-			vmr.addr = region_start;
-			vmr.len = region_length;
-
-			ret = _write(fd, &vmr, sizeof(vmr));
-			if (ret != sizeof(vmr))
-				return -1;
-
-#ifdef CHECKSUM_MD5
-			if (checksum)
-				md5_update(&md5_checkpoint_ctx, &vmr, sizeof(vmr));
-#endif
-
-			if (proc_mem) {
-				ret = get_mem_region(md, cd, region_start, region_length, fd);
-				if (ret)
-					return ret;
-			} else {
-				ret = get_target_mem_region(cd, region_start, region_length, 1, fd);
-				if (ret)
-					return ret;
-			}
+			ret = get_vm_region(md, cd, region_start, region_length, fd);
+			if (ret <= 0)
+				return ret;
 
 			region_start = 0;
 			region_length = 0;
@@ -1205,7 +1250,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			if (!region_start)
 				continue;
 
-			ret = get_target_mem_region(cd, region_start, region_length, 0, fd);
+			ret = free_vm_region(cd, region_start, region_length);
 			if (ret)
 				return ret;
 
@@ -1241,7 +1286,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
-	fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
+	fd = dump_open(path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
 		fprintf(stderr, "%s() open failed with: %m\n", __func__);
 		return -1;
@@ -1278,7 +1323,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 out:
 	close(cd);
 	close(md);
-	close(fd);
+	dump_close(fd);
 	close(pd);
 	return ret;
 }
@@ -1356,7 +1401,7 @@ static int target_set_pages(pid_t pid)
 
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
-	fd = open(path, O_RDONLY);
+	fd = dump_open(path, O_RDONLY, 0);
 	if (fd < 0) {
 		fprintf(stderr, "[-] %s() open failed with: %m\n", __func__);
 		return -1;
@@ -1379,32 +1424,9 @@ static int target_set_pages(pid_t pid)
 		struct vm_region_req req;
 		char buf[MAX_VM_REGION_SIZE];
 
-		ret = _read(fd, &vmr, sizeof(vmr));
-		if (ret == 0)
+		ret = read_vm_region(fd, &vmr, buf);
+		if (ret <= 0)
 			break;
-
-#ifdef CHECKSUM_MD5
-		if (checksum)
-			md5_update(&md5_restore_ctx, &vmr, sizeof(vmr));
-#endif
-
-#ifdef COMPRESS_LZ4
-		if (compress) {
-			ret = read_and_decompress_lz4(buf, fd);
-			if (ret)
-				break;
-		} else
-#endif
-		{
-			ret = _read(fd, &buf, vmr.len);
-			if (ret == 0)
-				break;
-		}
-
-#ifdef CHECKSUM_MD5
-		if (checksum)
-			md5_update(&md5_restore_ctx, buf, vmr.len);
-#endif
 
 		req.vmr = vmr;
 		req.flags = 0;
@@ -1424,7 +1446,7 @@ static int target_set_pages(pid_t pid)
 
 out:
 	close(cd);
-	close(fd);
+	dump_close(fd);
 	return ret;
 }
 
@@ -2418,6 +2440,7 @@ static void usage(const char *name, int status)
 #ifdef CHECKSUM_MD5
 	fprintf(status ? stderr : stdout, "  -c --checksum	enable md5 checksum for memory dump\n");
 #endif
+	fprintf(status ? stderr : stdout, "  -e --encrypt	encrypt library options (\"help\" for details)\n");
 
 	exit(status);
 }
@@ -2440,6 +2463,8 @@ int main(int argc, char *argv[])
 	int option_index;
 	int pid = 0;
 	char *listen_location = NULL;
+	int encrypt = 0;
+	char *encrypt_arg = NULL;
 
 	static struct option long_options[] = {
 		{ "help",			0,	NULL,	'h'},
@@ -2456,13 +2481,14 @@ int main(int argc, char *argv[])
 #ifdef CHECKSUM_MD5
 		{ "checksum",			0,	NULL,	'c'},
 #endif
+		{ "encrypt",			2,	0,	'e'},
 		{ NULL,				0,	NULL,	0}
 	};
 
 	dump_dir = "/tmp";
 	parasite_socket_dir = NULL;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmfzc", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmfzce::", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2498,6 +2524,13 @@ int main(int argc, char *argv[])
 				checksum = 1;
 				break;
 #endif
+			case 'e':
+				encrypt = 1;
+				if (optarg)
+					encrypt_arg = optarg;
+				else if (optind < argc && argv[optind][0] != '-')
+					encrypt_arg = argv[optind++];
+				break;
 			default: /* '?' */
 				usage(argv[0], 1);
 		}
@@ -2525,11 +2558,21 @@ int main(int argc, char *argv[])
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
 
+	if (lib__init) {
+		ret = lib__init(encrypt, encrypt_arg);
+		if (ret)
+			goto err;
+	}
+
 	if (listen_location)
 		ret = service_mode(listen_location);
 	else
 		ret = user_interactive_mode(pid);
 
+	if (lib__fini)
+		lib__fini();
+
+err:
 	close(kpageflags_fd);
 
 	return ret;
