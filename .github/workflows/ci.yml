@@ -32,9 +32,9 @@ jobs:
         make CHECKSUM_MD5=1
         make clean
 
-    - name: build x86_64 lz4 md5
+    - name: build x86_64 lz4 md5 enc
       run: |
-        make COMPRESS_LZ4=1 CHECKSUM_MD5=1
+        make COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
         make clean
 
     - name: build arm
