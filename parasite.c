@@ -36,6 +36,8 @@
 
 static int finish;
 
+void service(unsigned int cmd, void *args);
+
 #if VERBOSE == 1
 static char *long_to_str(long v)
 {
