@@ -47,6 +47,16 @@ static int block_size;
 static unsigned char key[16];
 static unsigned char iv[16];
 
+/*
+ * Prototypes matching memcr.
+ */
+int lib__open(const char *pathname, int flags, mode_t mode);
+int lib__close(int fd);
+int lib__read(int fd, void *buf, size_t count);
+int lib__write(int fd, const void *buf, size_t count);
+int lib__init(int enable, const char *arg);
+int lib__fini(void);
+
 
 int lib__open(const char *pathname, int flags, mode_t mode)
 {

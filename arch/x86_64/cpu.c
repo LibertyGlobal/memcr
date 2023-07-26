@@ -20,7 +20,7 @@
 #include <sys/user.h>
 #include <assert.h>
 
-#include "cpu.h"
+#include "../cpu.h"
 
 void set_cpu_regs(struct registers *regs, unsigned long *pc, unsigned long arg0, unsigned long arg1)
 {

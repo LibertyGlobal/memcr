@@ -16,12 +16,11 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-#define _GNU_SOURCE
 #include <signal.h>
 #include <sys/mman.h>
-#include <sched.h>
+#include <linux/sched.h>
 
-void __attribute__((used)) container(void)
+static void __attribute__((used)) container(void)
 {
 	/*
 	 * Upon completion, each blob triggers debug trap to pass the

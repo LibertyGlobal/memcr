@@ -25,7 +25,7 @@ ifeq ("$(origin LD)", "default")
     undefine LD
 endif
 
-CFLAGS = -Wall -Werror
+CFLAGS = -Wall -Werror -Wmissing-prototypes
 # memcr CFLAGS
 MCFLAGS = $(CFLAGS) -g
 # parasite CFLAGS

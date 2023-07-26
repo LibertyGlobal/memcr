@@ -1759,7 +1759,7 @@ static int setup_parasite_args(pid_t pid, void *base)
 }
 
 
-void *parasite_watch_thread(void *ptr)
+static void *parasite_watch_thread(void *ptr)
 {
 	int ret;
 	unsigned long pid = (unsigned long)ptr;
@@ -1785,7 +1785,7 @@ void *parasite_watch_thread(void *ptr)
 	return NULL;
 }
 
-int parasite_watch(pid_t pid)
+static int parasite_watch(pid_t pid)
 {
 	int ret;
 	pthread_t id;
@@ -2225,7 +2225,7 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd)
 	}
 }
 
-void register_signal_handlers()
+static void register_signal_handlers(void)
 {
 	struct sigaction sigchld_action, sigpipe_action;
 
@@ -2437,7 +2437,7 @@ static void usage(const char *name, int status)
 	exit(status);
 }
 
-void die(const char *fmt, ...)
+static void die(const char *fmt, ...)
 {
 	va_list ap;
 
