@@ -25,23 +25,13 @@
 
 __parasite_head_start:
 	leaq __parasite_stack(%rip), %rsp
-	subq $16, %rsp
-	andq $~15, %rsp
-	pushq $0
-	movq %rsp, %rbp
-	movl __parasite_cmd(%rip), %edi
-	leaq __parasite_args(%rip), %rsi
+	leaq __parasite_args(%rip), %rdi
 	call service
 	int $0x03 /* SIGTRAP */
 	.align 8, 0x90
 
-__parasite_cmd:
-	.long 0
-
 __parasite_args:
-	.long 0
 	.space PARASITE_ARG_SIZE, 0
-	.space PARASITE_STACK_SIZE, 0
 
 __parasite_stack:
-	.long 0
+	.space PARASITE_STACK_SIZE, 0

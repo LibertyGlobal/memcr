@@ -309,32 +309,32 @@ static int parasite_status_ok(void)
 	return ret;
 }
 
-static void create_filesystem_socketname(char * addr, int addr_size, pid_t pid)
+static void parasite_socket_init(struct sockaddr_un *addr, pid_t pid)
 {
-	snprintf(addr, addr_size, "%s/memcr%u", parasite_socket_dir, pid);
-}
+	memset(addr, 0x00, sizeof(struct sockaddr_un));
 
-static void create_abstract_socketname(char * addr, int addr_size, pid_t pid)
-{
-	snprintf(addr, addr_size, "#memcr%u", pid);
-}
+	addr->sun_family = AF_UNIX;
 
-static void cleanup_socket(int pid)
-{
-	char socketaddr[108];
-
-	create_filesystem_socketname(socketaddr, sizeof(socketaddr), pid);
-	unlink(socketaddr);
+	if (parasite_socket_dir)
+		snprintf(addr->sun_path, sizeof(addr->sun_path), "%s/memcr%u", parasite_socket_dir, pid);
+	else {
+		snprintf(addr->sun_path, sizeof(addr->sun_path), "#memcr%u", pid);
+		addr->sun_path[0] = '\0';
+	}
 }
 
 static void cleanup_pid(pid_t pid)
 {
 	char path[PATH_MAX];
+
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 	unlink(path);
 
-	if (parasite_socket_dir)
-		cleanup_socket(pid);
+	if (!parasite_socket_dir)
+		return;
+
+	snprintf(path, sizeof(path), "%s/memcr%u", parasite_socket_dir, pid);
+	unlink(path);
 }
 
 static void cleanup_checkpointed_pids(void)
@@ -552,7 +552,7 @@ static int unseize_target(void)
 static int parasite_connect(pid_t pid)
 {
 	int cd;
-	struct sockaddr_un addr = { 0 };
+	struct sockaddr_un addr;
 	int ret;
 	int cnt = 0;
 
@@ -562,14 +562,7 @@ static int parasite_connect(pid_t pid)
 		return -1;
 	}
 
-	addr.sun_family = PF_UNIX;
-
-	if (parasite_socket_dir) {
-		create_filesystem_socketname(addr.sun_path, sizeof(addr.sun_path), pid);
-	} else {
-		create_abstract_socketname(addr.sun_path, sizeof(addr.sun_path), pid);
-		addr.sun_path[0] = '\0';
-	}
+	parasite_socket_init(&addr, pid);
 
 	/* parasite needs some time to start listening on a socket */
 retry:
@@ -854,10 +847,10 @@ err:
 
 static int setup_listen_unix_socket(const char *client_socket_path)
 {
-	struct sockaddr_un addr;
+	struct sockaddr_un addr = {
+		.sun_family = AF_UNIX,
+	};
 
-	addr.sun_family = PF_UNIX;
-	memset(addr.sun_path, 0, sizeof(addr.sun_path));
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", client_socket_path);
 
 	fprintf(stdout, "[x] Trying to configure UNIX %s socket.\n", addr.sun_path);
@@ -1750,14 +1743,10 @@ static int setup_parasite_args(pid_t pid, void *base)
 	unsigned long *src = (unsigned long *)&pa;
 	unsigned long *dst = (unsigned long *)PARASITE_ARGS_ADDR(base);
 
-	if (parasite_socket_dir)
-		create_filesystem_socketname(pa.addr, sizeof(pa.addr), pid);
-	else
-		create_abstract_socketname(pa.addr, sizeof(pa.addr), pid);
+	parasite_socket_init(&pa.addr, pid);
 
 	return poke(pid, dst, src, sizeof(pa));
 }
-
 
 static void *parasite_watch_thread(void *ptr)
 {

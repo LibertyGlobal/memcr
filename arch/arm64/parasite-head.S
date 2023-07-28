@@ -24,23 +24,15 @@
 	.align 4, 0x00
 
 __parasite_head_start:
-	adr x1, __parasite_stack
-	mov sp, x1
-	adr x0, __parasite_cmd
-	ldr x0, [x0]
-	adr x1, __parasite_args
+	adr x0, __parasite_stack
+	mov sp, x0
+	adr x0, __parasite_args
 	bl service
 	brk #0 /* SIGTRAP */
 	.align 4, 0x00
 
-__parasite_cmd:
-	.quad 0
-
 __parasite_args:
-	.quad 0
 	.space PARASITE_ARG_SIZE, 0
-	.space PARASITE_STACK_SIZE, 0
-	.space 224, 0 /* 8+4 fill */
 
 __parasite_stack:
-	.quad 0
+	.space PARASITE_STACK_SIZE, 0
