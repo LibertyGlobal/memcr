@@ -25,21 +25,14 @@
 
 __parasite_head_start:
 	adr sp, __parasite_stack
-	adr r0, __parasite_cmd
-	ldr r0, [r0]
-	adr r1, __parasite_args
+	adr r0, __parasite_args
 	bl service
 	udf #16 @ SIGTRAP
 	.align 4, 0x00
 
-__parasite_cmd:
-	.long 0
-
 __parasite_args:
-	.long 0
 	.space PARASITE_ARG_SIZE, 0
-	.space PARASITE_STACK_SIZE, 0
-	.space 224, 0 /* 8+4 fill */
+	.space 56, 0 /* 8+4 fill */
 
 __parasite_stack:
-	.long 0
+	.space PARASITE_STACK_SIZE, 0

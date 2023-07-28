@@ -16,15 +16,11 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-#include <sys/types.h>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
 
 #include "memcr.h"
-
 #include "arch/syscall.h"
 
 #define VERBOSE 1
@@ -32,41 +28,11 @@
 #define __stringify_1(x...)	#x
 #define __stringify(x...)	__stringify_1(x)
 
-#define BOOM() do { *((int *)NULL) = 1; } while (0)
-
 static int finish;
 
-void service(unsigned int cmd, void *args);
+void service(struct parasite_args *args);
 
 #if VERBOSE == 1
-static char *long_to_str(long v)
-{
-	static char buf[sizeof(unsigned long) * 3];
-	char *p = buf + sizeof(buf) - 1;
-	int minus = 0;
-
-	*p = '\0';
-
-	if (v == 0) {
-		*--p = '0';
-		return p;
-	}
-
-	if (v < 0) {
-		minus = 1;
-		v = -v;
-	}
-
-	while (v) {
-		*--p = '0' + (v % 10);
-		v /= 10;
-	}
-
-	if (minus)
-		*--p = '-';
-
-	return p;
-}
 
 static char *ulong_to_hstr(unsigned long v)
 {
@@ -76,10 +42,8 @@ static char *ulong_to_hstr(unsigned long v)
 
 	*p = '\0';
 
-	if (v == 0) {
+	if (v == 0)
 		*--p = '0';
-		return p;
-	}
 
 	while (v) {
 		x = v % 16;
@@ -90,7 +54,7 @@ static char *ulong_to_hstr(unsigned long v)
 	return p;
 }
 
-static void print_msg(int fd, const char *msg)
+static void print(int fd, const char *msg)
 {
 	int size;
 
@@ -99,92 +63,53 @@ static void print_msg(int fd, const char *msg)
 	sys_write(fd, msg, size);
 }
 
-#define __DEBUG__ do { \
-	print_msg(1, __func__); \
-	print_msg(1, "() +" __stringify(__LINE__) "\n"); \
-} while (0);
+#else /* VERBOSE */
 
-#define print_err(fd, txt, ret) do { \
-	print_msg((fd), __func__); \
-	print_msg((fd), "() +" __stringify(__LINE__) ": " txt); \
-	print_msg((fd), long_to_str(ret)); \
-	print_msg((fd), "\n"); \
-} while (0);
+#define print(fd, msg) {}
 
-#define die(txt, ret) do { \
-	print_msg(2, __func__); \
-	print_msg(2, "() +" __stringify(__LINE__) ": " txt); \
-	print_msg(2, long_to_str(ret)); \
-	print_msg(2, "\n"); \
-	*((int *)NULL) = 1; \
-} while (0);
-#else /* VERBOSE*/
-
-#define print_msg(fd, msg) {}
-#define __DEBUG__
-#define print_err(fd, txt, ret) {}
-#define die(txt, ret) { \
-	*((int *)NULL) = 1; \
-}
 #endif
 
-static void xstrcpy(char *dst, char *src)
-{
-	int idx;
+#define die(txt, ret) do { \
+	print(2, __stringify(__LINE__) ": " txt); \
+	print(2, ulong_to_hstr(ret)); \
+	print(2, "\n"); \
+	__builtin_trap(); \
+} while (0);
 
-	for (idx = 0; src[idx] != '\0'; idx++)
-		dst[idx] = src[idx];
 
-	dst[idx + 1] = '\0';
-}
-
-static int xread(int fd, void *buf, int size)
+static int read(int fd, void *buf, int size)
 {
 	int ret;
-	int off = 0;
+	int done = 0;
 
-	while (1) {
-		ret = sys_read(fd, buf + off, size - off);
+	while (done < size) {
+		ret = sys_read(fd, buf + done, size - done);
 		if (ret == 0)
 			break;
 
-		if (ret < 0) {
-			print_err(2, "sys_read() failed with ret ", ret);
-			break;
-		}
+		if (ret < 0)
+			die("sys_read() failed: ", ret);
 
-		if (ret < size - off) {
-			off += ret;
-			continue;
-		}
-
-		return size;
+		done += ret;
 	}
 
-	return ret;
+	return done;
 }
 
-static int xwrite(int fd, void *buf, int size)
+static int write(int fd, const void *buf, int size)
 {
 	int ret;
-	int off = 0;
+	int done = 0;
 
-	while (1) {
-		ret = sys_write(fd, buf + off, size - off);
-		if (ret < 0) {
-			print_err(2, "sys_write() failed with ret ", ret);
-			break;
-		}
+	while (done < size) {
+		ret = sys_write(fd, buf + done, size - done);
+		if (ret < 0)
+			die("sys_write() failed: ", ret);
 
-		if (ret < size - off) {
-			off += ret;
-			continue;
-		}
-
-		return size;
+		done += ret;
 	}
 
-	return ret;
+	return done;
 }
 
 static int cmd_mprotect(int cd)
@@ -193,20 +118,13 @@ static int cmd_mprotect(int cd)
 	struct vm_mprotect req;
 
 	while (1) {
-		ret = xread(cd, &req, sizeof(req));
+		ret = read(cd, &req, sizeof(req));
 		if (ret == 0)
 			break;
 
-		if (ret < 0) {
-			print_err(2, "xread() failed with ret ", ret);
-			BOOM();
-		}
-
 		ret = sys_mprotect(req.addr, req.len, req.prot);
-		if (ret == -1) {
-			print_err(2, "sys_mprotect() failed with ret ", ret);
-			BOOM();
-		}
+		if (ret < 0)
+			die("sys_mprotect() failed: ", ret);
 	}
 
 	return 0;
@@ -218,26 +136,16 @@ static int cmd_get_pages(int cd)
 	struct vm_region_req req;
 
 	while (1) {
-		ret = xread(cd, &req, sizeof(req));
+		ret = read(cd, &req, sizeof(req));
 		if (ret == 0)
 			break;
 
-		if (ret < 0) {
-			print_err(2, "xread() failed with ret ", ret);
-			BOOM();
-		}
-
 		if (req.flags & VM_REGION_TX)
-			xwrite(cd, (void *)req.vmr.addr, req.vmr.len);
+			write(cd, (void *)req.vmr.addr, req.vmr.len);
 
 		ret = sys_madvise(req.vmr.addr, req.vmr.len, MADV_DONTNEED);
-		if (ret < 0) {
-			print_msg(2, "sys_madvise() MADV_DONTNEED of ");
-			print_msg(2, ulong_to_hstr((long)req.vmr.addr));
-			print_msg(2, " failed with ");
-			print_msg(2, long_to_str(ret));
-			print_msg(2, "\n");
-		}
+		if (ret < 0)
+			die("sys_madvise() failed: ", ret);
 	}
 
 	return 0;
@@ -249,11 +157,11 @@ static int cmd_set_pages(int cd)
 	struct vm_region_req req;
 
 	while (1) {
-		ret = xread(cd, &req, sizeof(req));
+		ret = read(cd, &req, sizeof(req));
 		if (ret == 0)
 			break;
 
-		xread(cd, (void *)req.vmr.addr, req.vmr.len);
+		read(cd, (void *)req.vmr.addr, req.vmr.len);
 	}
 
 	return 0;
@@ -272,10 +180,8 @@ static int handle_connection(int cd)
 	char cmd;
 
 	ret = sys_read(cd, &cmd, 1);
-	if (ret != 1) {
-		print_err(2, "sys_read() failed: ", ret);
-		return ret;
-	}
+	if (ret != 1)
+		die("sys_read() failed: ", ret);
 
 	switch (cmd) {
 		case CMD_MPROTECT:
@@ -287,48 +193,36 @@ static int handle_connection(int cd)
 		case CMD_END:
 			return cmd_end(cd);
 		default:
-			print_err(2, "unhandled cmd ", cmd);
-			break;
+			die("unhandled cmd: ", cmd);
 	}
 
 	return 0;
 }
 
-void __attribute__((__used__)) service(unsigned int cmd, void *args)
+void __attribute__((__used__)) service(struct parasite_args *args)
 {
 	int ret;
-	struct parasite_args *pa = args;
 	int srvd;
-	struct sockaddr_un addr;
 
-	srvd = sys_socket(PF_UNIX, SOCK_STREAM, 0);
-	if (srvd < 0) {
+	srvd = sys_socket(AF_UNIX, SOCK_STREAM, 0);
+	if (srvd < 0)
 		die("sys_socket() failed: ", srvd);
-	}
 
-	addr.sun_family = PF_UNIX;
-	xstrcpy(addr.sun_path, pa->addr);
-	if ('#' == addr.sun_path[0])
-		addr.sun_path[0] = '\0';
-
-	ret = sys_bind(srvd, (struct sockaddr *)&addr, sizeof(addr));
-	if (ret) {
+	ret = sys_bind(srvd, (struct sockaddr *)&args->addr, sizeof(args->addr));
+	if (ret < 0)
 		die("sys_bind() failed: ", ret);
-	}
 
-	ret = sys_listen(srvd, 8);
-	if (ret < 0) {
+	ret = sys_listen(srvd, 1);
+	if (ret < 0)
 		die("sys_listen() failed: ", ret);
-	}
 
 	while (!finish) {
 		ret = sys_accept(srvd, NULL, NULL);
-		if (ret < 0) {
-			print_err(2, "sys_accept() failed: ", ret);
-		} else {
-			handle_connection(ret);
-			sys_close(ret);
-		}
+		if (ret < 0)
+			die("sys_accept() failed: ", ret);
+
+		handle_connection(ret);
+		sys_close(ret);
 	}
 
 	sys_close(srvd);

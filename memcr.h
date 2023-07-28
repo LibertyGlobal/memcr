@@ -26,7 +26,7 @@
 #endif
 
 struct parasite_args {
-	char addr[108]; /* abstract or filesystem socket address */
+	struct sockaddr_un addr;
 };
 
 typedef enum {
