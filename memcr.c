@@ -1839,11 +1839,10 @@ static int ctx_save(pid_t pid)
 	ctx.pid = pid;
 
 	/* allocate space to save original code */
-	ctx.code_size = DIV_ROUND_UP(MAX(test_blob_size,
-				 MAX(sigprocmask_blob_size,
+	ctx.code_size = DIV_ROUND_UP(MAX(sigprocmask_blob_size,
 				 MAX(mmap_blob_size,
 				 MAX(clone_blob_size,
-				 munmap_blob_size)))),
+				 munmap_blob_size))),
 				 sizeof(unsigned long));
 
 	ctx.code = malloc(sizeof(unsigned long) * ctx.code_size);

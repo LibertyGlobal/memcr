@@ -27,22 +27,6 @@ static void __attribute__((used)) container(void)
 	 * control back to the main program.
 	 */
 
-	/* this one just says hi to stdout for testing blob execution */
-	asm volatile(
-		".global test_blob				\n"
-		"test_blob:					\n"
-		"mov x8, #64					\n" /* __NR_write */
-		"mov x0, #1					\n" /* @fd */
-		"adr x1, _string				\n" /* @buf */
-		"mov x2, #20					\n" /* @count */
-		"svc #0						\n"
-		"brk #0						\n" /* SIGTRAP */
-		"_string: .ascii \"BLOB: hello, world!\\n\"	\n"
-		".global test_blob_size				\n"
-		"test_blob_size:				\n"
-		".int test_blob_size - test_blob		\n"
-	);
-
 	/* rt_sigprocmask(), expects pointer to area for masks in x10 */
 	asm volatile(
 		".global sigprocmask_blob			\n"
