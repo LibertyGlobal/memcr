@@ -1,4 +1,10 @@
 # memory checkpoint and restore
+
+[![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-x86_64.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-x86_64.yml)
+[![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm.yml)
+[![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm64.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm64.yml)
+[![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-clang.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-clang.yml)
+
 memcr was written as a PoC to demonstrate that it is possible to temporarily reduce RSS of a target process without killing it. This is achieved by freezing the process, checkpointing its memory to a file and restoring it later when needed.
 
 The idea is based on concepts seen in ptrace-parasite and early CRIU versions. The key difference is that the target process is kept alive and memcr manipulates its memory with `madvise()` `MADV_DONTNEED` syscall to reduce RSS. VM mappings are not changed.
