@@ -1,0 +1,20 @@
+name: CI arm64
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: install dependencies
+      run: |
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+
+    - name: build
+      run: |
+        make CROSS_COMPILE=aarch64-linux-gnu-
+        make clean
