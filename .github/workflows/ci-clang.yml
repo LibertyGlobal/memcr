@@ -1,0 +1,36 @@
+name: CI clang
+
+on: [ push, pull_request ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: install dependencies
+      run: |
+        sudo apt-get install -y liblz4-dev liblz4-1
+        sudo apt-get install -y libssl-dev libssl3
+
+    - name: build
+      run: |
+        make CC=clang
+        make clean
+
+    - name: build lz4
+      run: |
+        make CC=clang COMPRESS_LZ4=1
+        make clean
+
+    - name: build md5
+      run: |
+        make CC=clang CHECKSUM_MD5=1
+        make clean
+
+    - name: build lz4 md5 enc
+      run: |
+        make CC=clang COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
+        make clean

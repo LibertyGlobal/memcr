@@ -1,4 +1,4 @@
-name: CI
+name: CI x86_64
 
 on: [ push, pull_request ]
 
@@ -14,36 +14,23 @@ jobs:
       run: |
         sudo apt-get install -y liblz4-dev liblz4-1
         sudo apt-get install -y libssl-dev libssl3
-        sudo apt-get install -y gcc-arm-linux-gnueabihf
-        sudo apt-get install -y gcc-aarch64-linux-gnu
 
-    - name: build x86_64
+    - name: build
       run: |
         make
         make clean
 
-    - name: build x86_64 lz4
+    - name: build lz4
       run: |
         make COMPRESS_LZ4=1
         make clean
 
-    - name: build x86_64 md5
+    - name: build md5
       run: |
         make CHECKSUM_MD5=1
         make clean
 
-    - name: build x86_64 lz4 md5 enc
+    - name: build lz4 md5 enc
       run: |
         make COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
         make clean
-
-    - name: build arm
-      run: |
-        make CROSS_COMPILE=arm-linux-gnueabihf-
-        make clean
-
-    - name: build arm64
-      run: |
-        make CROSS_COMPILE=aarch64-linux-gnu-
-        make clean
-
