@@ -448,7 +448,12 @@ static int seize_pid(pid_t pid)
 
 	ret = ptrace(PTRACE_SEIZE, pid, NULL, 0);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_SEIZE) pid %d: %m\n", pid);
+		if (errno == ESRCH) {
+			fprintf(stderr, "ptrace(PTRACE_SEIZE) pid %d: %m, ignoring\n", pid);
+			return 0;
+		}
+
+		fprintf(stderr, "ptrace(PTRACE_SEIZE) %d pid %d: %m\n", errno, pid);
 		return 1;
 	}
 
