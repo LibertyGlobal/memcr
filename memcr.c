@@ -1837,7 +1837,10 @@ static int peek(pid_t pid, unsigned long *addr, unsigned long *dst, size_t len)
 {
 	int i;
 
-	for (i = 0; i < DIV_ROUND_UP(len, sizeof(unsigned long)); i++) {
+	/* len must be a mutliple of CPU word size */
+	assert(len % sizeof(unsigned long) == 0);
+
+	for (i = 0; i < (len / sizeof(unsigned long)); i++) {
 		errno = 0;
 		dst[i] = ptrace(PTRACE_PEEKDATA, pid, addr + i, NULL);
 		if (errno) {
@@ -1854,7 +1857,10 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 	int ret;
 	int i;
 
-	for (i = 0; i < DIV_ROUND_UP(len, sizeof(unsigned long)); i++) {
+	/* len must be a mutliple of CPU word size */
+	assert(len % sizeof(unsigned long) == 0);
+
+	for (i = 0; i < (len / sizeof(unsigned long)); i++) {
 		ret = ptrace(PTRACE_POKEDATA, pid, addr + i, *(src + i));
 		if (ret) {
 			fprintf(stderr, "[-] %s() failed addr %p, src %p, i %d: %m\n", __func__, addr, src, i);
@@ -2067,18 +2073,16 @@ static int signals_unblock(pid_t pid)
 
 static int ctx_save(pid_t pid)
 {
+	int max_blob_size;
 	struct registers regs;
 
 	ctx.pid = pid;
 
 	/* allocate space to save original code */
-	ctx.code_size = DIV_ROUND_UP(MAX(sigprocmask_blob_size,
-				 MAX(mmap_blob_size,
-				 MAX(clone_blob_size,
-				 munmap_blob_size))),
-				 sizeof(unsigned long));
+	max_blob_size = MAX(sigprocmask_blob_size, MAX(mmap_blob_size, MAX(clone_blob_size, munmap_blob_size)));
+	ctx.code_size = DIV_ROUND_UP(max_blob_size, sizeof(unsigned long)) * sizeof(unsigned long);
 
-	ctx.code = malloc(sizeof(unsigned long) * ctx.code_size);
+	ctx.code = malloc(ctx.code_size);
 	assert(ctx.code);
 
 	read_cpu_regs(ctx.pid, &regs);

@@ -30,6 +30,7 @@ static void __attribute__((used)) container(void)
 	/* rt_sigprocmask(), expects pointer to area for masks in %r15 */
 	asm volatile(
 		".global sigprocmask_blob			\n"
+		".align 8					\n"
 		"sigprocmask_blob:				\n"
 		"movq $14, %%rax				\n" /* __NR_rt_sigprocmask */
 		"movq %0, %%rdi					\n" /* @how */
@@ -39,6 +40,7 @@ static void __attribute__((used)) container(void)
 		"syscall					\n"
 		"int $0x03					\n"
 		".global sigprocmask_blob_size			\n"
+		".align 8					\n"
 		"sigprocmask_blob_size:				\n"
 		".int sigprocmask_blob_size - sigprocmask_blob	\n"
 		:: "i" (SIG_SETMASK));
@@ -46,6 +48,7 @@ static void __attribute__((used)) container(void)
 	/* mmaps anon area for parasite_blob */
 	asm volatile(
 		".global mmap_blob				\n"
+		".align 8					\n"
 		"mmap_blob:					\n"
 		"movq $9, %%rax					\n" /* mmap */
 		"movq $0, %%rdi					\n" /* @addr */
@@ -57,6 +60,7 @@ static void __attribute__((used)) container(void)
 		"syscall					\n"
 		"int $0x03					\n"
 		".global mmap_blob_size				\n"
+		".align 8					\n"
 		"mmap_blob_size:				\n"
 		".int mmap_blob_size - mmap_blob		\n"
 		:: "i" (PROT_EXEC | PROT_READ | PROT_WRITE),
@@ -65,6 +69,7 @@ static void __attribute__((used)) container(void)
 	/* clones parasite, expects parasite address in %r15 */
 	asm volatile(
 		".global clone_blob				\n"
+		".align 8					\n"
 		"clone_blob:					\n"
 		"movq $56, %%rax				\n" /* clone */
 		"movq %0, %%rdi					\n" /* @flags */
@@ -77,6 +82,7 @@ static void __attribute__((used)) container(void)
 		"jmp *%%r15					\n" /* jmp parasite */
 		"1: int $0x03					\n"
 		".global clone_blob_size			\n"
+		".align 8					\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
 		:: "i" (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM));
@@ -84,6 +90,7 @@ static void __attribute__((used)) container(void)
 	/* munmaps anon area for parasite_blob, expects mmap address in %r15 and len in %r14 */
 	asm volatile(
 		".global munmap_blob				\n"
+		".align 8					\n"
 		"munmap_blob:					\n"
 		"movq $11, %%rax				\n" /* munmap */
 		"movq %%r15, %%rdi				\n" /* @addr */
@@ -91,6 +98,7 @@ static void __attribute__((used)) container(void)
 		"syscall					\n"
 		"int $0x03					\n"
 		".global munmap_blob_size			\n"
+		".align 8					\n"
 		"munmap_blob_size:				\n"
 		".int munmap_blob_size - munmap_blob		\n"
 		::
