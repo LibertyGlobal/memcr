@@ -62,6 +62,8 @@ else
     MCFLAGS += -fstack-protector-all -fstack-protector-strong
 endif
 
+#MCFLAGS += -fsanitize=thread
+
 CC ?= $(CROSS_COMPILE)gcc
 LD ?= $(CROSS_COMPILE)ld.bfd
 OBJCOPY ?= $(CROSS_COMPILE)objcopy
