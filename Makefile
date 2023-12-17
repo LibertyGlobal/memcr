@@ -63,6 +63,7 @@ else
 endif
 
 #MCFLAGS += -fsanitize=thread
+#MCFLAGS += -fsanitize=address -static-libasan
 
 CC ?= $(CROSS_COMPILE)gcc
 LD ?= $(CROSS_COMPILE)ld.bfd

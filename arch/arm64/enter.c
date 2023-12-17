@@ -30,6 +30,7 @@ static void __attribute__((used)) container(void)
 	/* rt_sigprocmask(), expects pointer to area for masks in x10 */
 	asm volatile(
 		".global sigprocmask_blob			\n"
+		".align 3					\n"
 		"sigprocmask_blob:				\n"
 		"mov x8, #135					\n" /* __NR_rt_sigprocmask */
 		"mov x0, %0					\n" /* @how */
@@ -39,6 +40,7 @@ static void __attribute__((used)) container(void)
 		"svc #0						\n"
 		"brk #0						\n" /* SIGTRAP */
 		".global sigprocmask_blob_size			\n"
+		".align 3					\n"
 		"sigprocmask_blob_size:				\n"
 		".int sigprocmask_blob_size - sigprocmask_blob	\n"
 		:: "i" (SIG_SETMASK)
@@ -47,6 +49,7 @@ static void __attribute__((used)) container(void)
 	/* mmaps anon area for parasite_blob */
 	asm volatile(
 		".global mmap_blob				\n"
+		".align 3					\n"
 		"mmap_blob:					\n"
 		"mov x8, #222					\n" /* __NR_mmap2 */
 		"mov x0, #0					\n" /* @addr */
@@ -58,6 +61,7 @@ static void __attribute__((used)) container(void)
 		"svc #0						\n"
 		"brk #0						\n" /* SIGTRAP */
 		".global mmap_blob_size				\n"
+		".align 3					\n"
 		"mmap_blob_size:				\n"
 		".int mmap_blob_size - mmap_blob		\n"
 		:: "i" (PROT_EXEC | PROT_READ | PROT_WRITE),
@@ -67,6 +71,7 @@ static void __attribute__((used)) container(void)
 	/* clones parasite, expects parasite address in x10 */
 	asm volatile(
 		".global clone_blob				\n"
+		".align 3					\n"
 		"clone_blob:					\n"
 		"mov x8, #220					\n" /* __NR_clone */
 		"ldr x0, CLONE_FLAGS				\n" /* @flags */
@@ -82,6 +87,7 @@ static void __attribute__((used)) container(void)
 		"CLONE_FLAGS:					\n"
 		".quad (%0 & 0xffffffff)			\n" /* zero high .word */
 		".global clone_blob_size			\n"
+		".align 3					\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
 		:: "i" (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM)
@@ -90,6 +96,7 @@ static void __attribute__((used)) container(void)
 	/* munmap anon area for parasite_blob, expects addr in x10 and len in x11 */
 	asm volatile(
 		".global munmap_blob				\n"
+		".align 3					\n"
 		"munmap_blob:					\n"
 		"mov x8, #215					\n" /* __NR_munmap */
 		"mov x0, x10					\n" /* @addr */
@@ -97,6 +104,7 @@ static void __attribute__((used)) container(void)
 		"svc #0						\n"
 		"brk #0						\n" /* SIGTRAP */
 		".global munmap_blob_size			\n"
+		".align 3					\n"
 		"munmap_blob_size:				\n"
 		".int munmap_blob_size - munmap_blob		\n"
 	);

@@ -19,7 +19,7 @@
 #ifndef __ENTER_H__
 #define __ENTER_H__
 
-extern char test_blob[], sigprocmask_blob[], mmap_blob[], clone_blob[], munmap_blob[];
-extern int test_blob_size, sigprocmask_blob_size, mmap_blob_size, clone_blob_size, munmap_blob_size;
+extern char sigprocmask_blob[], mmap_blob[], clone_blob[], munmap_blob[];
+extern int sigprocmask_blob_size, mmap_blob_size, clone_blob_size, munmap_blob_size;
 
 #endif

@@ -25,9 +25,10 @@
 #define PAGE_SIZE 4096
 #endif
 
+/* size is CPU word aligned for ptrace() peek/poke */
 struct parasite_args {
 	struct sockaddr_un addr;
-};
+} __attribute__((aligned(sizeof(unsigned long))));
 
 typedef enum {
 	CMD_MPROTECT = 1,
