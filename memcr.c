@@ -155,10 +155,16 @@ static struct target_context ctx;
 
 static int interrupted;
 
-static pthread_mutex_t parasite_status_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t parasite_status_cond = PTHREAD_COND_INITIALIZER;
-static unsigned long parasite_status;
-static unsigned long parasite_status_changed;
+static struct {
+	pthread_t thread_id;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	int changed;
+	int status;
+} parasite_watch = {
+	.lock = PTHREAD_MUTEX_INITIALIZER,
+	.cond = PTHREAD_COND_INITIALIZER,
+};
 
 /*
  * man sigaction: For a ptrace(2) event, si_code will contain SIG‐TRAP and have the ptrace event in the high byte:
@@ -257,7 +263,7 @@ static int service_cmds_wait_and_pop_front(struct service_command_ctx *ctx)
 	} else if (service_cmds_ctx.interrupt == TRUE)
 		ret = 1;
 	else
-		fprintf(stderr, "[-] %s: pthread_cond_wait(): %m\n", __func__);
+		fprintf(stderr, "[-] %s: pthread_cond_wait() failed: %d\n", __func__, ret);
 
 	pthread_mutex_unlock(&service_cmds_ctx.lock);
 	return ret;
@@ -345,11 +351,11 @@ static void md5_final(unsigned char *md, unsigned int *len, void *ctx)
 
 static void parasite_status_signal(pid_t pid, int status)
 {
-	pthread_mutex_lock(&parasite_status_lock);
-	parasite_status = status;
-	parasite_status_changed = 1;
-	pthread_cond_signal(&parasite_status_cond);
-	pthread_mutex_unlock(&parasite_status_lock);
+	pthread_mutex_lock(&parasite_watch.lock);
+	parasite_watch.changed = 1;
+	parasite_watch.status = status;
+	pthread_cond_signal(&parasite_watch.cond);
+	pthread_mutex_unlock(&parasite_watch.lock);
 
 	if (WIFEXITED(status))
 		; /* normal exit */
@@ -371,12 +377,12 @@ static int parasite_status_wait(int *status)
 		clock_gettime(CLOCK_REALTIME, &ts);
 		ts.tv_sec += 1;
 
-		pthread_mutex_lock(&parasite_status_lock);
-		while (!parasite_status_changed && (ret == 0 || ret == ETIMEDOUT))
-			ret = pthread_cond_timedwait(&parasite_status_cond, &parasite_status_lock, &ts);
+		pthread_mutex_lock(&parasite_watch.lock);
+		while (!parasite_watch.changed && (ret == 0 || ret == ETIMEDOUT))
+			ret = pthread_cond_timedwait(&parasite_watch.cond, &parasite_watch.lock, &ts);
 		if (!ret)
-			*status = parasite_status;
-		pthread_mutex_unlock(&parasite_status_lock);
+			*status = parasite_watch.status;
+		pthread_mutex_unlock(&parasite_watch.lock);
 
 		if (ret != ETIMEDOUT)
 			break;
@@ -385,7 +391,9 @@ static int parasite_status_wait(int *status)
 	}
 
 	if (ret)
-		fprintf(stdout, "[-] parasite status cond timedwait failed: %s\n", strerror(ret));
+		fprintf(stderr, "[-] parasite status cond timedwait failed: %d\n", ret);
+
+	pthread_join(parasite_watch.thread_id, NULL);
 
 	return ret;
 }
@@ -394,9 +402,9 @@ static int parasite_status_ok(void)
 {
 	int ret;
 
-	pthread_mutex_lock(&parasite_status_lock);
-	ret = !parasite_status_changed;
-	pthread_mutex_unlock(&parasite_status_lock);
+	pthread_mutex_lock(&parasite_watch.lock);
+	ret = !parasite_watch.changed;
+	pthread_mutex_unlock(&parasite_watch.lock);
 
 	return ret;
 }
@@ -2000,14 +2008,13 @@ static void *parasite_watch_thread(void *ptr)
 	return NULL;
 }
 
-static int parasite_watch(pid_t pid)
+static int parasite_watch_start(pid_t pid)
 {
 	int ret;
-	pthread_t id;
 
-	ret = pthread_create(&id, NULL, parasite_watch_thread, (void *)(unsigned long)pid);
+	ret = pthread_create(&parasite_watch.thread_id, NULL, parasite_watch_thread, (void *)(unsigned long)pid);
 	if (ret)
-		printf("[-] pthread_create() failed: %s\n", strerror(ret));
+		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
 
 	return ret;
 }
@@ -2138,7 +2145,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	/* translate lxc ns pid to global one */
 	iterate_pstree(pid, 0, MAX_THREADS, update_parasite_pid);
 
-	parasite_watch(parasite_pid);
+	parasite_watch_start(parasite_pid);
 
 	ret = cmd_checkpoint(pid);
 	return ret;
@@ -2177,13 +2184,17 @@ static void sigint_handler(int signal)
 	fprintf(stdout, "%s() got SIGINT\n", __func__);
 }
 
-static void sigchld_handler_service (int sig, siginfo_t *sip, void *notused)
+static void sigchld_handler_service(int sig, siginfo_t *sip, void *notused)
 {
 	int status;
+	int _errno;
+
+	_errno = errno;
 	if (sip->si_pid == waitpid(sip->si_pid, &status, WNOHANG)) {
 		fprintf(stdout, "[+] Worker %d exit.\n", sip->si_pid);
 		clear_pid_on_worker_exit_non_blocking(sip->si_pid);
 	}
+	errno = _errno;
 }
 
 static void sigchld_handler_worker(int signal)
@@ -2629,7 +2640,7 @@ static int service_mode(const char *listen_location)
 
 	ret = pthread_create(&svc_cmd_thread_id, NULL, service_command_thread, NULL);
 	if (ret) {
-		printf("[-] pthread_create() failed: %s\n", strerror(ret));
+		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
 		goto err;
 	}
 
@@ -2705,7 +2716,7 @@ static int user_interactive_mode(pid_t pid)
 
 	ret = pthread_create(&user_abort_thread_id, NULL, user_abort_thread, NULL);
 	if (ret) {
-		printf("[-] pthread_create() failed: %s\n", strerror(ret));
+		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
 		return ret;
 	}
 
