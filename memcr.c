@@ -153,7 +153,7 @@ static pid_t parasite_pid;
 static pid_t parasite_pid_clone;
 static struct target_context ctx;
 
-static int interrupted;
+static sig_atomic_t interrupted;
 
 static struct {
 	pthread_t thread_id;
@@ -197,9 +197,6 @@ static struct {
 	int checkpoint_abort;
 	int checkpoint_cmd_sd;
 } checkpoint_service_data[CHECKPOINTED_PIDS_LIMIT];
-
-static pthread_mutex_t checkpoint_user_lock = PTHREAD_MUTEX_INITIALIZER;
-static int checkpoint_user_abort;
 
 #define SOCKET_INVALID				(-1)
 static int checkpoint_service_socket = SOCKET_INVALID;
@@ -921,6 +918,9 @@ static void clear_socket_for_checkpoint_service_cmds(void)
 
 static int is_checkpoint_aborted(void)
 {
+	if (interrupted)
+		return 1;
+
 	if (service) {
 		struct service_command svc_cmd;
 
@@ -928,18 +928,8 @@ static int is_checkpoint_aborted(void)
 			return 0;
 
 		int ret = _read_silent(checkpoint_service_socket, &svc_cmd, sizeof(svc_cmd));
-		if (ret == sizeof(svc_cmd) && svc_cmd.cmd == MEMCR_RESTORE)	{
-			fprintf(stdout, "[+] Checkpoint aborted\n");
+		if (ret == sizeof(svc_cmd) && svc_cmd.cmd == MEMCR_RESTORE)
 			return 1;
-		}
-	} else {
-		int ret;
-		pthread_mutex_lock(&checkpoint_user_lock);
-		ret = checkpoint_user_abort;
-		pthread_mutex_unlock(&checkpoint_user_lock);
-		if (ret)
-			fprintf(stdout, "[+] Checkpoint aborted\n");
-		return ret;
 	}
 
 	return 0;
@@ -2184,8 +2174,10 @@ static int execute_parasite_restore(pid_t pid)
 
 static void sigint_handler(int signal)
 {
+	const char *msg = "[i] SIGINT\n";
+
 	interrupted = 1;
-	fprintf(stdout, "%s() got SIGINT\n", __func__);
+	write(1, msg, strlen(msg));
 }
 
 static void sigchld_handler_service(int sig, siginfo_t *sip, void *notused)
@@ -2622,7 +2614,7 @@ static void service_command(struct service_command_ctx *svc_ctx)
 
 static int service_mode(const char *listen_location)
 {
-	int ret = 0;
+	int ret;
 	int csd, cd;
 	int listen_port = atoi(listen_location);
 	int flags;
@@ -2661,8 +2653,7 @@ static int service_mode(const char *listen_location)
 		errsv = errno;
 		if ((ret < 0) && (errsv != EINTR)) {
 			fprintf(stderr, "[-] Error on socket select: %d\n", errsv);
-			interrupted = 1;
-			continue;
+			break;
 		}
 
 		if(ret <= 0) /* Select timeout or EINTR */
@@ -2685,7 +2676,7 @@ static int service_mode(const char *listen_location)
 		errsv = errno;
 		if (errsv != EAGAIN || errsv != EWOULDBLOCK) {
 			fprintf(stdout, "[-] Error on socket accept: %d\n", errsv);
-			interrupted = 1;
+			break;
 		}
 	}
 
@@ -2703,47 +2694,27 @@ err:
 	return ret;
 }
 
-static void* user_abort_thread(void *ptr)
-{
-	fprintf(stdout, "[x] --> press enter to abort checkpoint <--\n");
-	fgetc(stdin);
-	pthread_mutex_lock(&checkpoint_user_lock);
-	checkpoint_user_abort = TRUE;
-	pthread_mutex_unlock(&checkpoint_user_lock);
-	return NULL;
-}
-
 static int user_interactive_mode(pid_t pid)
 {
 	int ret;
-	pthread_t user_abort_thread_id;
-
-	ret = pthread_create(&user_abort_thread_id, NULL, user_abort_thread, NULL);
-	if (ret) {
-		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
-		return ret;
-	}
 
 	ret = seize_target(pid);
 	if (ret)
 		return ret;
 
 	ret = execute_parasite_checkpoint(pid);
-	if(ret)
+	if (ret)
 		goto out;
 
-	if (!no_wait) {
+	if (!no_wait && !interrupted) {
 		long dms;
 		long h, m, s, ms;
 		struct timespec ts;
 
-		pthread_mutex_lock(&checkpoint_user_lock);
-		if (!checkpoint_user_abort && !interrupted)
-			fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--\n");
-		pthread_mutex_unlock(&checkpoint_user_lock);
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 
-		pthread_join(user_abort_thread_id, NULL);
+		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--\n");
+		fgetc(stdin);
 
 		dms = diff_ms(&ts);
 		h = dms/1000/60/60;
@@ -2807,7 +2778,7 @@ int main(int argc, char *argv[])
 	int encrypt = 0;
 	char *encrypt_arg = NULL;
 
-	static struct option long_options[] = {
+	struct option long_options[] = {
 		{ "help",			0,	NULL,	'h'},
 		{ "pid",			1,	NULL,	'p'},
 		{ "dir",			1,	NULL,	'd'},
@@ -2819,7 +2790,7 @@ int main(int argc, char *argv[])
 		{ "compress",			0,	NULL,	'z'},
 		{ "checksum",			0,	NULL,	'c'},
 		{ "encrypt",			2,	0,	'e'},
-		{ NULL,				0,	NULL,	0}
+		{ NULL,				0,	NULL,	0  }
 	};
 
 	dump_dir = "/tmp";
