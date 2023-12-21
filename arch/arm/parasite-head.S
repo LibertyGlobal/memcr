@@ -20,19 +20,20 @@
 #define PARASITE_ARG_SIZE   4096
 
 .section .head.text, "ax"
-	.globl __parasite_head_start
-	.align 4, 0x00
+.globl __parasite_head_start
 
+.align 2
 __parasite_head_start:
 	adr sp, __parasite_stack
 	adr r0, __parasite_args
 	bl service
 	udf #16 @ SIGTRAP
-	.align 4, 0x00
 
+.align 2
 __parasite_args:
 	.space PARASITE_ARG_SIZE, 0
 	.space 56, 0 /* 8+4 fill */
 
+.align 2 /* sp must be 4-byte aligned */
 __parasite_stack:
 	.space PARASITE_STACK_SIZE, 0

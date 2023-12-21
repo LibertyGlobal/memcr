@@ -20,6 +20,9 @@
 #include <sys/mman.h>
 #include <linux/sched.h>
 
+/*
+ * blobs are 2^3 aligned (rather than 2^2) for ptrace() peek/poke
+ */
 static void __attribute__((used)) container(void)
 {
 	/*

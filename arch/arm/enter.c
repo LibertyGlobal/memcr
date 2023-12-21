@@ -29,7 +29,7 @@ static void __attribute__((used)) container(void)
 	/* rt_sigprocmask(), expects pointer to area for masks in r8 */
 	asm volatile(
 		".global sigprocmask_blob			\n"
-		".align 3					\n"
+		".align 2					\n"
 		"sigprocmask_blob:				\n"
 		"mov r7, #175					\n" /* __NR_rt_sigprocmask */
 		"mov r0, %0					\n" /* @how */
@@ -39,7 +39,7 @@ static void __attribute__((used)) container(void)
 		"svc 0x0					\n"
 		"udf #16					\n" /* SIGTRAP */
 		".global sigprocmask_blob_size			\n"
-		".align 3					\n"
+		".align 2					\n"
 		"sigprocmask_blob_size:				\n"
 		".int sigprocmask_blob_size - sigprocmask_blob	\n"
 		:: "i" (SIG_SETMASK)
@@ -48,7 +48,7 @@ static void __attribute__((used)) container(void)
 	/* mmaps anon area for parasite_blob */
 	asm volatile(
 		".global mmap_blob				\n"
-		".align 3					\n"
+		".align 2					\n"
 		"mmap_blob:					\n"
 		"mov r7, #192					\n" /* __NR_mmap2 */
 		"mov r0, #0					\n" /* @addr */
@@ -60,7 +60,7 @@ static void __attribute__((used)) container(void)
 		"svc 0x0					\n"
 		"udf #16					\n" /* SIGTRAP */
 		".global mmap_blob_size				\n"
-		".align 3					\n"
+		".align 2					\n"
 		"mmap_blob_size:				\n"
 		".int mmap_blob_size - mmap_blob		\n"
 		:: "i" (PROT_EXEC | PROT_READ | PROT_WRITE),
@@ -70,7 +70,7 @@ static void __attribute__((used)) container(void)
 	/* clones parasite, expects parasite address in r8 */
 	asm volatile(
 		".global clone_blob				\n"
-		".align 3					\n"
+		".align 2					\n"
 		"clone_blob:					\n"
 		"mov r7, #120					\n" /* __NR_clone */
 		"ldr r0, CLONE_FLAGS				\n"
@@ -84,7 +84,7 @@ static void __attribute__((used)) container(void)
 		"CLONE_FLAGS:					\n"
 		".word 0x80050f00				\n" /* (CLONE_FILES | CLONE_FS | CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM | CLONE_THREAD | CLONE_VM) */
 		".global clone_blob_size			\n"
-		".align 3					\n"
+		".align 2					\n"
 		"clone_blob_size:				\n"
 		".int clone_blob_size - clone_blob		\n"
 	);
@@ -92,7 +92,7 @@ static void __attribute__((used)) container(void)
 	/* munmap anon area for parasite_blob, expects addr in r8 and len in r9 */
 	asm volatile(
 		".global munmap_blob				\n"
-		".align 3					\n"
+		".align 2					\n"
 		"munmap_blob:					\n"
 		"mov r7, #91					\n" /* __NR_munmap */
 		"mov r0, r8					\n" /* @addr */
@@ -100,7 +100,7 @@ static void __attribute__((used)) container(void)
 		"svc 0x0					\n"
 		"udf #16					\n" /* SIGTRAP */
 		".global munmap_blob_size			\n"
-		".align 3					\n"
+		".align 2					\n"
 		"munmap_blob_size:				\n"
 		".int munmap_blob_size - munmap_blob		\n"
 	);

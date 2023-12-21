@@ -20,15 +20,19 @@
 #define __MEMCR_H__
 
 #include <stdint.h>
+#include <assert.h>
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
 
-/* size is CPU word aligned for ptrace() peek/poke */
 struct parasite_args {
 	struct sockaddr_un addr;
-} __attribute__((aligned(sizeof(unsigned long))));
+	char padding[2];
+};
+
+/* size must be CPU word aligned for ptrace() peek/poke */
+static_assert(sizeof(struct parasite_args) % sizeof(unsigned long) == 0, "invalid size");
 
 typedef enum {
 	CMD_MPROTECT = 1,

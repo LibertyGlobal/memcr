@@ -20,18 +20,19 @@
 #define PARASITE_ARG_SIZE   4096
 
 .section .head.text, "ax"
-	.global __parasite_head_start;
-	.align 8, 0x90; /* nop */
+.global __parasite_head_start;
 
+.align 8
 __parasite_head_start:
 	leaq __parasite_stack(%rip), %rsp
 	leaq __parasite_args(%rip), %rdi
 	call service
 	int $0x03 /* SIGTRAP */
-	.align 8, 0x90
 
+.align 8
 __parasite_args:
 	.space PARASITE_ARG_SIZE, 0
 
+.align 16 /* sp must be 16-byte aligned */
 __parasite_stack:
 	.space PARASITE_STACK_SIZE, 0
