@@ -39,30 +39,32 @@ static int xconnect(struct sockaddr *addr, socklen_t addrlen)
 
 	ret = connect(cd, addr, addrlen);
 	if (ret < 0) {
-			fprintf(stderr, "connect() to socket %s failed: %m\n", addr->sa_data);
-			close(cd);
-			return ret;
+		fprintf(stderr, "connect() failed: %m\n");
+		close(cd);
+		return ret;
 	}
 
 	return cd;
 }
 
-static int xconnect_unix(const char *path)
+static int connect_unix(const char *path)
 {
-	struct sockaddr_un addr;
-	addr.sun_family = PF_UNIX;
-	memset(addr.sun_path, 0, sizeof(addr.sun_path));
+	struct sockaddr_un addr = {
+		.sun_family = AF_UNIX,
+	};
+
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
 
 	return xconnect((struct sockaddr *)&addr, sizeof(addr));
 }
 
-static int xconnect_tcp(int port)
+static int connect_tcp(int port)
 {
-	struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-	addr.sin_port = htons(port);
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = inet_addr("127.0.0.1"),
+		.sin_port = htons(port),
+	};
 
 	return xconnect((struct sockaddr *)&addr, sizeof(addr));
 }
@@ -115,13 +117,13 @@ int main(int argc, char *argv[])
 	char *comm_location = NULL;
 	int pid = 0;
 
-	static struct option long_options[] = {
-		{ "help",       0,  0,  0},
-		{ "location",   1,  0,  0},
-		{ "pid",        1,  0,  0},
-		{ "checkpoint", 0,  0,  0},
-		{ "restore",    0,  0,  0},
-		{ NULL,         0,  0,  0}
+	struct option long_options[] = {
+		{ "help",       0,  0,  'h'},
+		{ "location",   1,  0,  'l'},
+		{ "pid",        1,  0,  'p'},
+		{ "checkpoint", 0,  0,  'c'},
+		{ "restore",    0,  0,  'r'},
+		{ NULL,         0,  0,  0  }
 	};
 
 	while ((opt = getopt_long(argc, argv, "hl:p:cr", long_options, &option_index)) != -1) {
@@ -162,9 +164,9 @@ int main(int argc, char *argv[])
 	port = atoi(comm_location);
 
 	if (port > 0)
-		cd = xconnect_tcp(port);
+		cd = connect_tcp(port);
 	else
-		cd = xconnect_unix(comm_location);
+		cd = connect_unix(comm_location);
 
 	if (cd < 0) {
 		fprintf(stderr, "Connection creation failed!\n");
