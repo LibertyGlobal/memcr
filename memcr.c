@@ -112,6 +112,7 @@ struct vm_area {
 
 static char *dump_dir;
 static char *parasite_socket_dir;
+static int parasite_socket_use_netns;
 static int no_wait;
 static int proc_mem;
 static int rss_file;
@@ -591,6 +592,53 @@ static int unseize_target(void)
 	return ret;
 }
 
+static int parasite_socket_create(pid_t pid)
+{
+	int pid_netns = -1;
+	int cur_netns = -1;
+	char netns_path[64];
+	int cd;
+
+	if (parasite_socket_use_netns) {
+		/* get both current and parasite network namespaces */
+		snprintf(netns_path, sizeof(netns_path), "/proc/%d/ns/net", pid);
+		pid_netns = open(netns_path, O_CLOEXEC | O_RDONLY);
+		if (pid_netns < 0) {
+			fprintf(stderr, "open('%s', ) failed: %m\n", netns_path);
+		} else {
+			cur_netns = open("/proc/self/ns/net", O_CLOEXEC | O_RDONLY);
+			if (cur_netns < 0) {
+				fprintf(stderr, "open('/proc/self/ns/net', ) failed: %m\n");
+				close(pid_netns);
+				pid_netns = -1;
+			}
+		}
+
+		/* switch to network namespace of parasite if available */
+		if (pid_netns >= 0) {
+			if (setns(pid_netns, CLONE_NEWNET) != 0) {
+				fprintf(stderr, "setns() failed: %m\n");
+			}
+			close(pid_netns);
+		}
+	}
+
+	cd = socket(PF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (cd < 0) {
+		fprintf(stderr, "socket() failed: %m\n");
+	}
+
+	/* restore original network namespace if available */
+	if (cur_netns >= 0) {
+		if (setns(cur_netns, CLONE_NEWNET) != 0) {
+			fprintf(stderr, "setns() failed: %m\n");
+		}
+		close(cur_netns);
+	}
+
+	return cd;
+}
+
 static int parasite_connect(pid_t pid)
 {
 	int cd;
@@ -598,9 +646,8 @@ static int parasite_connect(pid_t pid)
 	int ret;
 	int cnt = 0;
 
-	cd = socket(PF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+	cd = parasite_socket_create(pid);
 	if (cd < 0) {
-		fprintf(stderr, "socket() failed: %m\n");
 		return -1;
 	}
 
@@ -2743,6 +2790,8 @@ static void usage(const char *name, int status)
 		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir dir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
+		"  -N --parasite-socket-netns	use network namespace of parasite when connecting to socket\n" \
+		"        (useful if parasite is running in a container with netns)\n" \
 		"  -l --listen		work as a service waiting for requests on a socket\n" \
 		"        -l PORT: TCP port number to listen for requests on\n" \
 		"        -l PATH: filesystem path for UNIX domain socket file (will be created)\n" \
@@ -2783,6 +2832,7 @@ int main(int argc, char *argv[])
 		{ "pid",			1,	NULL,	'p'},
 		{ "dir",			1,	NULL,	'd'},
 		{ "parasite-socket-dir",	1,	NULL,	'S'},
+		{ "parasite-socket-netns",	0,	NULL,	'N'},
 		{ "listen",			1,	NULL,	'l'},
 		{ "no-wait",			0,	NULL,	'n'},
 		{ "proc-mem",			0,	NULL,	'm'},
@@ -2795,8 +2845,9 @@ int main(int argc, char *argv[])
 
 	dump_dir = "/tmp";
 	parasite_socket_dir = NULL;
+	parasite_socket_use_netns = 0;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:l:nmfzce::", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:Nl:nmfzce::", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2809,6 +2860,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'S':
 				parasite_socket_dir = optarg;
+				break;
+			case 'N':
+				parasite_socket_use_netns = 1;
 				break;
 			case 'l':
 				listen_location = optarg;
