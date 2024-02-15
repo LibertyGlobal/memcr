@@ -26,6 +26,8 @@
 #include "arm/linux-abi.h"
 #elif defined(__aarch64__)
 #include "arm64/linux-abi.h"
+#elif defined(__riscv_xlen)
+#include "riscv64/linux-abi.h"
 #else
 #error unsupported arch
 #endif

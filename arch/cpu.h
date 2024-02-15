@@ -25,6 +25,8 @@
 #include "arm/cpu.h"
 #elif defined(__aarch64__)
 #include "arm64/cpu.h"
+#elif defined(__riscv_xlen)
+#include "riscv64/cpu.h"
 #else
 #error unsupported arch
 #endif
