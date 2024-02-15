@@ -33,7 +33,7 @@ make COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
 ```
 
 ##### cross compilation
-Currently, supported architectures are x86_64, arm and arm64. You can cross compile memcr by providing `CROSS_COMPILE` prefix. i.e.:
+Currently, supported architectures are x86_64, arm,  arm64 and riscv64. You can cross compile memcr by providing `CROSS_COMPILE` prefix. i.e.:
 ```
 make CROSS_COMPILE=arm-linux-gnueabihf-
 make CROSS_COMPILE=aarch64-linux-gnu-
