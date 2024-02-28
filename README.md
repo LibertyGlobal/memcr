@@ -3,6 +3,7 @@
 [![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-x86_64.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-x86_64.yml)
 [![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm.yml)
 [![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm64.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-arm64.yml)
+[![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-riscv64.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-riscv64.yml)
 [![Build status](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-clang.yml/badge.svg)](https://github.com/LibertyGlobal/memcr/actions/workflows/ci-clang.yml)
 
 memcr was written as a PoC to demonstrate that it is possible to temporarily reduce RSS of a target process without killing it. This is achieved by freezing the process, checkpointing its memory to a file and restoring it later when needed.
@@ -33,7 +34,7 @@ make COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
 ```
 
 ##### cross compilation
-Currently, supported architectures are x86_64, arm,  arm64 and riscv64. You can cross compile memcr by providing `CROSS_COMPILE` prefix. i.e.:
+Currently, supported architectures are x86_64, arm, arm64 and riscv64. You can cross compile memcr by providing `CROSS_COMPILE` prefix. i.e.:
 ```
 make CROSS_COMPILE=arm-linux-gnueabihf-
 make CROSS_COMPILE=aarch64-linux-gnu-
