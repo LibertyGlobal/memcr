@@ -2512,6 +2512,7 @@ static int checkpoint_procedure_service(int checkpointSocket, int cd, int pid, i
 		// unnable to read response from worker, kill both
 		kill(pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
+		cleanup_pid(pid);
 		send_response_to_client(cd, MEMCR_ERROR_GENERAL);
 		return MEMCR_ERROR_GENERAL;
 	}
@@ -2551,6 +2552,7 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd, in
 		// unnable to read response from worker, kill both
 		kill(svc_cmd.pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
+		cleanup_pid(svc_cmd.pid);
 		ret = -1;
 	}
 
