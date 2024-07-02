@@ -22,6 +22,10 @@
 #include <stdint.h>
 #include <assert.h>
 
+#define MEMCR_VERSION_MAJOR 1
+#define MEMCR_VERSION_MINOR 0
+#define MEMCR_VERSION_PATCH 1
+
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif

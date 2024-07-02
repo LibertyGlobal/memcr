@@ -2904,6 +2904,8 @@ int main(int argc, char *argv[])
 	parasite_socket_dir = NULL;
 	parasite_socket_use_netns = 0;
 
+	fprintf(stdout, "[i] memcr version: %d.%d.%d\n", MEMCR_VERSION_MAJOR, MEMCR_VERSION_MINOR, MEMCR_VERSION_PATCH);
+
 	while ((opt = getopt_long(argc, argv, "hp:d:S:Nl:nmfzce::t:", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
