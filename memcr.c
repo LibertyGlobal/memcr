@@ -915,7 +915,7 @@ static void clear_pid_on_worker_exit_non_blocking(pid_t worker)
 {
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpoint_service_data[i].worker == worker) {
-			fprintf(stdout, "[+] Clearing pid: %d with worker: %d ...\n",
+			fprintf(stdout, "[+] Clearing pid: %d with worker: %d on worker exit ...\n",
 				checkpoint_service_data[i].pid, worker);
 			cleanup_pid(checkpoint_service_data[i].pid);
 			checkpoint_service_data[i].pid = PID_INVALID;
@@ -2248,12 +2248,13 @@ static void sigchld_handler_service(int sig, siginfo_t *sip, void *notused)
 {
 	int status;
 	int _errno;
+	pid_t pid;
 
 	_errno = errno;
-	if (sip->si_pid == waitpid(sip->si_pid, &status, WNOHANG)) {
-		fprintf(stdout, "[+] Worker %d exit.\n", sip->si_pid);
-		clear_pid_on_worker_exit_non_blocking(sip->si_pid);
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		clear_pid_on_worker_exit_non_blocking(pid);
 	}
+
 	errno = _errno;
 }
 
