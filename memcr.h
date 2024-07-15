@@ -22,6 +22,10 @@
 #include <stdint.h>
 #include <assert.h>
 
+#ifndef GIT_VERSION
+#define GIT_VERSION "unknown"
+#endif
+
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif

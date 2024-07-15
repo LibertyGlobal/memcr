@@ -91,17 +91,23 @@ static int send_cmd(int cd, struct service_command cmd)
 	return resp.resp_code;
 }
 
+static void print_version(void)
+{
+	fprintf(stdout, "[i] memcr-client version %s\n", GIT_VERSION);
+}
+
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s -l PORT|PATH -p PID [-c -r]\n" \
+		"%s -l PORT|PATH -p PID [-c -r] [-V]\n" \
 		"options: \n" \
 		"  -h --help\t\thelp\n" \
 		"  -l --location\t\tTCP port number of localhost memcr service\n" \
 		"\t\t\t or filesystem path to memcr service UNIX socket\n" \
 		"  -p --pid\t\tprocess ID to be checkpointed / restored\n" \
 		"  -c --checkpoint\tsend checkpoint command to memcr service\n" \
-		"  -r --restore\t\tsend restore command to memcr service\n",
+		"  -r --restore\t\tsend restore command to memcr service\n" \
+		"  -V --version\t\tprint version and exit\n",
 		name);
 	exit(status);
 }
@@ -123,10 +129,11 @@ int main(int argc, char *argv[])
 		{ "pid",        1,  0,  'p'},
 		{ "checkpoint", 0,  0,  'c'},
 		{ "restore",    0,  0,  'r'},
+		{ "version",    0,  0,  'V'},
 		{ NULL,         0,  0,  0  }
 	};
 
-	while ((opt = getopt_long(argc, argv, "hl:p:cr", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hl:p:crV", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -143,6 +150,9 @@ int main(int argc, char *argv[])
 			case 'r':
 				restore = 1;
 				break;
+			case 'V':
+				print_version();
+				exit(0);
 			default: /* '?' */
 				usage(argv[0], 1);
 				break;

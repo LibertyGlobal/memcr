@@ -2833,10 +2833,15 @@ out:
 	return ret;
 }
 
+static void print_version(void)
+{
+	fprintf(stdout, "[i] memcr version %s\n", GIT_VERSION);
+}
+
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e]\n" \
+		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e] [-V]\n" \
 		"options:\n" \
 		"  -h --help		help\n" \
 		"  -p --pid		target processs pid\n" \
@@ -2854,7 +2859,8 @@ static void usage(const char *name, int status)
 		"  -z --compress		compress memory dump\n" \
 		"  -c --checksum		enable md5 checksum for memory dump\n" \
 		"  -e --encrypt		enable encryption of memory dump\n" \
-		"  -t --timeout		timeout in seconds for checkpoint/restore execution in service mode\n",
+		"  -t --timeout		timeout in seconds for checkpoint/restore execution in service mode\n" \
+		"  -v --version		print version and exit\n",
 		name);
 
 	exit(status);
@@ -2895,6 +2901,7 @@ int main(int argc, char *argv[])
 		{ "checksum",			0,	NULL,	'c'},
 		{ "encrypt",			2,	0,	'e'},
 		{ "timeout",			1,	0,	't'},
+		{ "version",			0,	0,	'V'},
 		{ NULL,				0,	NULL,	0  }
 	};
 
@@ -2902,7 +2909,7 @@ int main(int argc, char *argv[])
 	parasite_socket_dir = NULL;
 	parasite_socket_use_netns = 0;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:Nl:nmfzce::t:", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:Nl:nmfzce::t:V", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2954,6 +2961,9 @@ int main(int argc, char *argv[])
 			case 't':
 				timeout = atoi(optarg);
 				break;
+			case 'V':
+				print_version();
+				exit(0);
 			default: /* '?' */
 				usage(argv[0], 1);
 		}
@@ -2964,6 +2974,8 @@ int main(int argc, char *argv[])
 
 	if (pid <= 0 && !listen_location)
 		die("pid must be > 0\n");
+
+	print_version();
 
 	ret = access("/proc/self/pagemap", F_OK);
 	if (ret)
