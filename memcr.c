@@ -364,7 +364,7 @@ static void parasite_status_signal(pid_t pid, int status)
 		else
 			printf("[i] parasite terminated by signal %d%s\n", WTERMSIG(status), WCOREDUMP(status) ? " (code dumped)" : " ");
 	else
-		printf("[-] unhandled prasite status %x\n", status);
+		printf("[-] unhandled parasite status %x\n", status);
 }
 
 static int parasite_status_wait(int *status)
@@ -1891,7 +1891,7 @@ static int peek(pid_t pid, unsigned long *addr, unsigned long *dst, size_t len)
 {
 	int i;
 
-	/* len must be a mutliple of CPU word size */
+	/* len must be a multiple of CPU word size */
 	assert(len % sizeof(unsigned long) == 0);
 
 	for (i = 0; i < (len / sizeof(unsigned long)); i++) {
@@ -1911,7 +1911,7 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 	int ret;
 	int i;
 
-	/* len must be a mutliple of CPU word size */
+	/* len must be a multiple of CPU word size */
 	assert(len % sizeof(unsigned long) == 0);
 
 	for (i = 0; i < (len / sizeof(unsigned long)); i++) {
@@ -1964,7 +1964,7 @@ retry:
 		 * there isn't much we can do about KILL handling.
 		 *
 		 * So, regardless of signo, we can simply retry after
-		 * control returns to jboctl trap.
+		 * control returns to jobctl trap.
 		 *
 		 * Note that if signal is delivered between syscall and the
 		 * trapping instruction in the blob, the syscall might be
@@ -2509,7 +2509,7 @@ static int checkpoint_procedure_service(int checkpointSocket, int cd, int pid, i
 		return svc_resp.resp_code;
 	} else {
 		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
-		// unnable to read response from worker, kill both
+		// unable to read response from worker, kill both
 		kill(pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
 		send_response_to_client(cd, MEMCR_ERROR_GENERAL);
@@ -2548,7 +2548,7 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd, in
 
 	if (ret != sizeof(struct service_response)) {
 		fprintf(stderr, "[-] %s() read() svc_resp failed: ret %d\n", __func__, ret);
-		// unnable to read response from worker, kill both
+		// unable to read response from worker, kill both
 		kill(svc_cmd.pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
 		ret = -1;
@@ -2844,9 +2844,9 @@ static void usage(const char *name, int status)
 		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e] [-V]\n" \
 		"options:\n" \
 		"  -h --help		help\n" \
-		"  -p --pid		target processs pid\n" \
+		"  -p --pid		target process pid\n" \
 		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
-		"  -S --parasite-socket-dir dir where socket to communicate with parasite is created\n" \
+		"  -S --parasite-socket-dir	dir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
 		"  -N --parasite-socket-netns	use network namespace of parasite when connecting to socket\n" \
 		"        (useful if parasite is running in a container with netns)\n" \
@@ -2860,7 +2860,7 @@ static void usage(const char *name, int status)
 		"  -c --checksum		enable md5 checksum for memory dump\n" \
 		"  -e --encrypt		enable encryption of memory dump\n" \
 		"  -t --timeout		timeout in seconds for checkpoint/restore execution in service mode\n" \
-		"  -v --version		print version and exit\n",
+		"  -V --version		print version and exit\n",
 		name);
 
 	exit(status);

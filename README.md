@@ -52,13 +52,15 @@ memcr -p <target pid>
 ```
 For the list of available options, check memcr help:
 ```
-memcr [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e]
+memcr [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e] [-V]
 options:
   -h --help             help
-  -p --pid              target processs pid
+  -p --pid              target process pid
   -d --dir              dir where memory dump is stored (defaults to /tmp)
-  -S --parasite-socket-dir dir where socket to communicate with parasite is created
+  -S --parasite-socket-dir      dir where socket to communicate with parasite is created
         (abstract socket will be used if no path specified)
+  -N --parasite-socket-netns    use network namespace of parasite when connecting to socket
+        (useful if parasite is running in a container with netns)
   -l --listen           work as a service waiting for requests on a socket
         -l PORT: TCP port number to listen for requests on
         -l PATH: filesystem path for UNIX domain socket file (will be created)
@@ -68,8 +70,11 @@ options:
   -z --compress         compress memory dump
   -c --checksum         enable md5 checksum for memory dump
   -e --encrypt          enable encryption of memory dump
+  -t --timeout          timeout in seconds for checkpoint/restore execution in service mode
+  -V --version          print version and exit
+
 ```
-memcr also supports client / server scenario where memcr runs as a deamon and listens for commands from a client process. The main reason for supporting this is that memcr needs rather high privileges to hijack target process and it's a good idea to keep it separate from memcr-client that can run in a container with low privileges.
+memcr also supports client / server scenario where memcr runs as a daemon and listens for commands from a client process. The main reason for supporting this is that memcr needs rather high privileges to hijack target process and it's a good idea to keep it separate from memcr-client that can run in a container with low privileges.
 
 memcr daemon:
 ```
