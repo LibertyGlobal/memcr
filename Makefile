@@ -104,7 +104,7 @@ endif
 
 PCFLAGS += -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -ffreestanding -fomit-frame-pointer -Wa,--noexecstack
 
-GIT_VERSION = $(shell git describe --dirty 2>/dev/null | sed 's/^v//' || echo "unknown")
+GIT_VERSION = $(shell (git describe --dirty 2>/dev/null || echo "unknown") | sed 's/^v//')
 
 GOFF = ./gen-offsets.sh
 
