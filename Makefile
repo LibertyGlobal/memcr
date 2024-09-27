@@ -166,13 +166,16 @@ $(B)/libencrypt.so: libencrypt.c
 	@size $@
 
 
+tests: $(B)/memcr
+	$(MAKE) -C tests CC=$(CC) MEMCR=../$<
+
+
 clean:
 	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client $(B)/libencrypt.so
+	$(MAKE) -C tests clean
+
 
 help:
-	@echo 'Clean target:'
-	@echo '  clean          - remove generated files'
-	@echo ''
 	@echo 'Build targets:'
 	@echo '  all            - build all targets'
 	@echo '  memcr          - build memcr binary'
@@ -181,5 +184,11 @@ help:
 	@echo '  COMPRESS_LZ4=1 - compile in support for memory dump LZ4 compression'
 	@echo '  CHECKSUM_MD5=1 - compile in support for memory dump MD5 checksumming'
 	@echo '  ENCRYPT=1      - compile libencrypt.so that can be preloaded for memcr'
+	@echo ''
+	@echo 'Test targets:'
+	@echo '  tests          - build and run memcr tests'
+	@echo ''
+	@echo 'Clean targets:'
+	@echo '  clean          - remove generated files'
 
-.PHONY: all clean help
+.PHONY: all tests clean help
