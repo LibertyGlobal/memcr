@@ -72,6 +72,24 @@ for OPT in "" "--proc-mem" "--rss-file" "--proc-mem --rss-file"; do
 	done
 done
 
+# compression tests
+if [ "$COMPRESS_LZ4" = 1 ]; then
+	MEMCR_CMD="${DO}$MEMCR -n -f --compress"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+	done
+fi
+
+# checksumming tests
+if [ "$CHECKSUM_MD5" = 1 ]; then
+	MEMCR_CMD="${DO}$MEMCR -n -f --checksum"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+	done
+fi
+
 # encryption tests
 if [ "$ENCRYPT" = "1" ]; then
 	if [ ! -f ../libencrypt.so ]; then
@@ -87,6 +105,15 @@ if [ "$ENCRYPT" = "1" ]; then
 				do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
 			done
 		done
+	done
+fi
+
+# combined tests
+if [ "$COMPRESS_LZ4" = 1 ] && [ "$CHECKSUM_MD5" = 1 ] && [ "$ENCRYPT" = "1" ]; then
+	MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n -f -z -c -e"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
 	done
 fi
 
