@@ -10,37 +10,87 @@ MEMCR=$1
 
 CUID=$(id -u)
 if [ "$CUID" != "0" ]; then
-	DO="sudo"
+	DO="sudo "
 else
 	DO=""
 fi
 
-TESTS="test-malloc"
+# text formatting
+WHITE='\033[37m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BOLD='\033[1m'
+NOFMT='\033[0m'
 
-for TEST in $TESTS; do
-	echo "######## running $TEST ########"
+TEST_CNT=0
+
+do_memcr_test()
+{
+	MEMCR_CMD=$1
+	TEST=$2
+
+	TEST_CNT=$((TEST_CNT + 1))
+	echo "${WHITE}[test $TEST_CNT] $MEMCR_CMD for $TEST${NOFMT}"
 
 	# start the test
 	./$TEST &
+	TPID=$!
 
 	# wait
-	sleep 0.2
+	sleep 0.05
 
 	# memcr
-	$DO $MEMCR -p $! -n -f
+	$MEMCR_CMD -p $TPID
 	if [ $? -ne 0 ]; then
-		kill $!
-		echo "[-] $TEST failed"
-		break
+		kill $TPID
+		echo "${RED}[test $TEST_CNT] failed${NOFMT}"
+		return 1
 	fi
 
 	# stop the test
-	kill -USR1 $!
-	wait $!
-	if [ $? -eq 0 ]; then
-		echo "[+] $TEST passed"
-	else
-		echo "[-] $TEST failed"
-		break
+	kill -USR1 $TPID
+	wait $TPID
+	if [ $? -ne 0 ]; then
+		echo "${RED}[test $TEST_CNT] failed${NOFMT}"
+		return 1
 	fi
+
+	echo "${GREEN}[test $TEST_CNT] passed${NOFMT}"
+	return 0
+}
+
+TESTS="test-malloc"
+
+TIME_START=$(date +%s%N)
+
+# basic tests
+for OPT in "" "--proc-mem" "--rss-file" "--proc-mem --rss-file"; do
+	MEMCR_CMD="${DO}$MEMCR -n $OPT"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+	done
 done
+
+# encryption tests
+if [ "$ENCRYPT" = "1" ]; then
+	if [ ! -f ../libencrypt.so ]; then
+		echo "${RED}libencrypt.so not found${NOFMT}"
+		exit 1
+	fi
+
+	for OPT in "--rss-file" "--proc-mem --rss-file"; do
+		for ENC in "" "aes-128-cbc" "aes-192-cbc" "aes-256-cbc"; do
+			MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n $OPT --encrypt $ENC"
+
+			for TEST in $TESTS; do
+				do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+			done
+		done
+	done
+fi
+
+TIME_END=$(date +%s%N)
+TIME_ELAPSED_MS=$(((TIME_END - TIME_START) / 1000000))
+
+echo "${BOLD}[+] all $TEST_CNT tests passed, took $TIME_ELAPSED_MS ms${NOFMT}"

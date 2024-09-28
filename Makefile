@@ -167,7 +167,11 @@ $(B)/libencrypt.so: libencrypt.c
 
 
 tests: $(B)/memcr
-	$(MAKE) -C tests CC=$(CC) MEMCR=../$<
+	$(MAKE) -C tests CC=$(CC) MEMCR=../$< ENCRYPT=$(ENCRYPT)
+
+ifeq ($(ENCRYPT), 1)
+tests: $(B)/libencrypt.so
+endif
 
 
 clean:
