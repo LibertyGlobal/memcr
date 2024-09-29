@@ -39,6 +39,7 @@
 #include <sys/ptrace.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/utsname.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <stdlib.h>
@@ -64,6 +65,10 @@
 #include "arch/cpu.h"
 #include "arch/enter.h"
 #include "parasite-blob.h"
+
+#ifndef ARCH_NAME
+#define ARCH_NAME "unknown"
+#endif
 
 #define NT_PRSTATUS 1
 
@@ -2838,7 +2843,15 @@ out:
 
 static void print_version(void)
 {
-	fprintf(stdout, "[i] memcr version %s\n", GIT_VERSION);
+	int ret;
+	struct utsname utsn;
+	char buf[256] = { 0 };
+
+	ret = uname(&utsn);
+	if (!ret)
+		snprintf(buf, sizeof(buf), " kernel %s %s", utsn.release, utsn.machine);
+
+	fprintf(stdout, "[i] memcr %s %s%s\n", GIT_VERSION, ARCH_NAME, buf);
 }
 
 static void usage(const char *name, int status)
