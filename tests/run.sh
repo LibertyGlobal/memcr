@@ -23,6 +23,10 @@ BOLD='\033[1m'
 NOFMT='\033[0m'
 
 TEST_CNT=0
+TEST_PIPE=./test-pipe
+
+# remove stale test pipe (if any)
+rm $TEST_PIPE
 
 do_memcr_test()
 {
@@ -32,12 +36,15 @@ do_memcr_test()
 	TEST_CNT=$((TEST_CNT + 1))
 	echo "${WHITE}[test $TEST_CNT] $MEMCR_CMD for $TEST${NOFMT}"
 
+	mkfifo $TEST_PIPE
+
 	# start the test
-	./$TEST &
+	./$TEST $TEST_PIPE &
 	TPID=$!
 
-	# wait
-	sleep 0.05
+	# wait for test to be ready
+	cat $TEST_PIPE
+	rm $TEST_PIPE
 
 	# memcr
 	$MEMCR_CMD -p $TPID
