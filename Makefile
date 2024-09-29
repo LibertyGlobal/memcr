@@ -104,7 +104,7 @@ endif
 
 PCFLAGS += -Wstrict-prototypes -fno-stack-protector -fpie -nostdlib -ffreestanding -fomit-frame-pointer -Wa,--noexecstack
 
-GIT_VERSION = $(shell (git describe --dirty 2>/dev/null || echo "unknown") | sed 's/^v//')
+GIT_VERSION = $(shell (git describe --dirty=+ 2>/dev/null || echo "unknown") | sed 's/^v//')
 
 GOFF = ./gen-offsets.sh
 
@@ -143,7 +143,7 @@ $(B)/cpu.o: arch/$(ARCH)/cpu.c
 	$(CC) $(MCFLAGS) -c $^ -o $@
 
 $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
-	$(CC) $(MCFLAGS) -DGIT_VERSION='"$(GIT_VERSION)"' -I$(B) -c $< -o $@
+	$(CC) $(MCFLAGS) -DGIT_VERSION='"$(GIT_VERSION)"' -DARCH_NAME='"$(ARCH)"' -I$(B) -c $< -o $@
 
 $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
 	$(CC) $(MCFLAGS) $^ $(LDFLAGS) -o $@
