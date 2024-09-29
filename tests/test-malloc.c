@@ -21,10 +21,29 @@ static void sighandler(int num)
 	signalled = num;
 }
 
+static void notify_ready(const char *pipe)
+{
+	int ret;
+	int fd;
+	char msg[64];
+
+	fd = open(pipe, O_WRONLY);
+	assert(fd >= 0);
+
+	snprintf(msg, sizeof(msg), PFX "pid %d ready\n", getpid());
+	ret = write(fd, msg, strlen(msg));
+	assert(ret == strlen(msg));
+
+	close(fd);
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
 	void *memb;
+
+	if (argc < 2)
+		return 1;
 
 	signal(SIGUSR1, sighandler);
 
@@ -45,6 +64,8 @@ int main(int argc, char *argv[])
 	printf(PFX "memb %d kB @ %p\n", TEST_SIZE / 1024, memb);
 
 	printf(PFX "waiting for SIGUSR1\n");
+
+	notify_ready(argv[1]);
 
 	while (!signalled)
 		usleep(10 * 1000);
