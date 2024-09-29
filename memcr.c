@@ -2869,7 +2869,7 @@ static void usage(const char *name, int status)
 	exit(status);
 }
 
-static void die(const char *fmt, ...)
+static void __attribute__((noreturn)) die(const char *fmt, ...)
 {
 	va_list ap;
 
@@ -2944,13 +2944,13 @@ int main(int argc, char *argv[])
 				break;
 			case 'z':
 #ifndef COMPRESS_LZ4
-				die("not enabled, recompile with COMPRESS_LZ4=1\n");
+				die("compression not available, recompile with COMPRESS_LZ4=1\n");
 #endif
 				compress = 1;
 				break;
 			case 'c':
 #ifndef CHECKSUM_MD5
-				die("not enabled, recompile with CHECKSUM_MD5=1\n");
+				die("checksumming not available, recompile with CHECKSUM_MD5=1\n");
 #endif
 				checksum = 1;
 				break;
@@ -2988,10 +2988,6 @@ int main(int argc, char *argv[])
 	if (ret)
 		die("/proc/kpageflags not present (depends on CONFIG_PROC_PAGE_MONITOR)\n");
 
-	kpageflags_fd = open("/proc/kpageflags", O_RDONLY);
-	if (kpageflags_fd == -1)
-		die("/proc/kpageflags: %m\n");
-
 	register_signal_handlers();
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -2999,8 +2995,13 @@ int main(int argc, char *argv[])
 	if (lib__init) {
 		ret = lib__init(encrypt, encrypt_arg);
 		if (ret)
-			goto err;
-	}
+			exit(1);
+	} else if (encrypt)
+		die("encryption not available, preload libencrypt.so\n");
+
+	kpageflags_fd = open("/proc/kpageflags", O_RDONLY);
+	if (kpageflags_fd == -1)
+		die("/proc/kpageflags: %m\n");
 
 	if (listen_location)
 		ret = service_mode(listen_location);
@@ -3010,7 +3011,6 @@ int main(int argc, char *argv[])
 	if (lib__fini)
 		lib__fini();
 
-err:
 	close(kpageflags_fd);
 
 	return ret;
