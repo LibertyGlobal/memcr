@@ -2060,7 +2060,7 @@ static void *parasite_watch_thread(void *ptr)
 	ret = wait4(pid, &status, __WALL, NULL);
 	if (ret != pid) {
 		fprintf(stderr, "[-] wait4() ret %d != parasite %ld, errno %m\n", ret, pid);
-		assert(ret == pid);
+		return NULL;
 	}
 
 	parasite_status_signal(pid, status);
