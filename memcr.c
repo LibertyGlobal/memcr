@@ -126,6 +126,7 @@ static int checksum;
 static int service;
 static unsigned int timeout;
 
+static unsigned int page_size;
 
 #define BIT(x) (1ULL << x)
 
@@ -150,7 +151,7 @@ static int nr_threads;
 static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
-#define MAX_VM_REGION_SIZE (256 * PAGE_SIZE)
+#define MAX_VM_REGION_SIZE (1 * 1024 * 1024)
 
 #ifdef COMPRESS_LZ4
 #define MAX_LZ4_DST_SIZE LZ4_compressBound(MAX_VM_REGION_SIZE)
@@ -1006,13 +1007,13 @@ static int is_checkpoint_aborted(void)
 
 static int vm_region_valid(const struct vm_region *vmr)
 {
-	if (vmr->addr & (PAGE_SIZE - 1)) {
-		fprintf(stderr, "[-] vm region addr %lx is not page aligned (off by 0x%lx)\n", vmr->addr, vmr->addr & (PAGE_SIZE - 1));
+	if (vmr->addr & (page_size - 1)) {
+		fprintf(stderr, "[-] vm region addr %lx is not page aligned (off by 0x%lx)\n", vmr->addr, vmr->addr & (page_size - 1));
 		return 0;
 	}
 
-	if (vmr->len % PAGE_SIZE) {
-		fprintf(stderr, "[-] vm region len %ld is not multiple of page size %d\n", vmr->len, (int)PAGE_SIZE);
+	if (vmr->len % page_size) {
+		fprintf(stderr, "[-] vm region len %ld is not multiple of page size %u\n", vmr->len, page_size);
 		return 0;
 	}
 
@@ -1267,7 +1268,7 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 		}
 
 		/* parasite vma */
-		if (should_skip_range(start, end + PAGE_SIZE))
+		if (should_skip_range(start, end + page_size))
 			continue;
 
 		if (file_path[0] == '/') {
@@ -1383,7 +1384,7 @@ static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, 
 	if (proc_mem) { /* read region from /proc/pid/mem */
 		off = lseek(md, addr, SEEK_SET);
 		if (off != addr) {
-			fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
+			fprintf(stderr, "lseek() off %lu: %m\n", off);
 			return -1;
 		}
 
@@ -1454,9 +1455,9 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 	unsigned long region_start = 0;
 	unsigned long region_length = 0;
 
-	nrpages = (vma->end - vma->start) / PAGE_SIZE;
+	nrpages = (vma->end - vma->start) / page_size;
 
-	idx = vma->start / PAGE_SIZE;
+	idx = vma->start / page_size;
 	off = idx * sizeof(uint64_t);
 	off = lseek(pd, off, SEEK_SET);
 	if (off != idx * sizeof(uint64_t)) {
@@ -1468,7 +1469,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		uint64_t map;
 		unsigned long addr;
 
-		addr = vma->start + idx * PAGE_SIZE;
+		addr = vma->start + idx * page_size;
 
 		ret = read(pd, &map, sizeof(map));
 		if (ret != sizeof(map)) {
@@ -1493,7 +1494,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				if (!region_start)
 					region_start = addr;
 
-				region_length += PAGE_SIZE;
+				region_length += page_size;
 
 				if ((idx + 1) < nrpages && region_length < MAX_VM_REGION_SIZE)
 					continue;
@@ -1518,7 +1519,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				if (!region_start)
 					region_start = addr;
 
-				region_length += PAGE_SIZE;
+				region_length += page_size;
 
 				if ((idx + 1) < nrpages)
 					continue;
@@ -1539,9 +1540,9 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 	}
 
 	if (nrpages_dumpable) {
-		fprintf(stdout, "[i]   %0*lx..%0*lx  %s %6ld kB", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, flag_desc[vma->flags], (nrpages_dumpable * PAGE_SIZE) / 1024);
+		fprintf(stdout, "[i]   %0*lx..%0*lx  %s %6ld kB", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, flag_desc[vma->flags], (nrpages_dumpable * page_size) / 1024);
 		if (nrpages_unevictable)
-			fprintf(stdout, " (unevictable %ld kB)", (nrpages_unevictable * PAGE_SIZE) / 1024);
+			fprintf(stdout, " (unevictable %ld kB)", (nrpages_unevictable * page_size) / 1024);
 		fprintf(stdout, "\n");
 	}
 
@@ -2151,7 +2152,7 @@ static int ctx_save(pid_t pid)
 	 * beginning of the page, there should be at least one page of
 	 * space. Determine the position and save the original code.
 	 */
-	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), PAGE_SIZE);
+	ctx.pc = (void *)round_down((unsigned long)get_cpu_regs_pc(&regs), page_size);
 	peek(ctx.pid, ctx.pc, ctx.code, ctx.code_size);
 
 	/*
@@ -2992,6 +2993,8 @@ int main(int argc, char *argv[])
 		die("pid must be > 0\n");
 
 	print_version();
+
+	page_size = getpagesize();
 
 	ret = access("/proc/self/pagemap", F_OK);
 	if (ret)
