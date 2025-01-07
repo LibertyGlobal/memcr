@@ -8,7 +8,7 @@
 
 memcr was written as a PoC to demonstrate that it is possible to temporarily reduce RSS of a target process without killing it. This is achieved by freezing the process, checkpointing its memory to a file and restoring it later when needed.
 
-The idea is based on concepts seen in ptrace-parasite and early CRIU versions. The key difference is that the target process is kept alive and memcr manipulates its memory with `madvise()` `MADV_DONTNEED` syscall to reduce RSS. VM mappings are not changed.
+The idea is based on concepts seen in ptrace-parasite and early [CRIU](https://github.com/checkpoint-restore/criu) versions. The key difference is that the target process is kept alive and memcr manipulates its memory with `madvise()` `MADV_DONTNEED` syscall to reduce RSS. VM mappings are not changed.
 
 #### building
 
@@ -23,7 +23,7 @@ You can enable support for compression and checksumming of memory dump file:
  There is also `ENCRYPT` option for building `libencrypt.so` that provides sample implementation of encryption layer based on libcrypto API. memcr is not linked with libencrypt.so, but it can be preloaded with `LD_PRELOAD`.
  - `ENCRYPT=1` - requires libcrypto and openssl headers
 
-Ubuntu 22.04:
+##### compilation on Ubuntu 22.04:
 ```
 sudo apt-get install liblz4-dev liblz4-1
 sudo apt-get install libssl-dev libssl3
@@ -40,7 +40,7 @@ make CROSS_COMPILE=arm-linux-gnueabihf-
 make CROSS_COMPILE=aarch64-linux-gnu-
 ```
 ##### yocto
-There is a generic `memcr.bb` file provided that you can copy into your yocto layer and build memcr as any other packet with bitbake.
+There is a generic `memcr.bb` recipe provided that you can copy into your yocto layer and build memcr as any other packet with bitbake.
 ```
 bitbake memcr
 ```
@@ -59,11 +59,14 @@ options:
   -d --dir              dir where memory dump is stored (defaults to /tmp)
   -S --parasite-socket-dir      dir where socket to communicate with parasite is created
         (abstract socket will be used if no path specified)
+  -G --parasite-socket-gid     group ID for parasite UNIX domain socket file, valid only for if --parasite-socket-dir provided,
+                               note: the group ID provided need to be common for: the user running memcr daemon and the user running suspended process
   -N --parasite-socket-netns    use network namespace of parasite when connecting to socket
         (useful if parasite is running in a container with netns)
   -l --listen           work as a service waiting for requests on a socket
         -l PORT: TCP port number to listen for requests on
         -l PATH: filesystem path for UNIX domain socket file (will be created)
+  -g --listen-gid       group ID for listen UNIX domain socket file, valid only in service mode for UNIX domain socket
   -n --no-wait          no wait for key press
   -m --proc-mem         get pages from /proc/pid/mem
   -f --rss-file         include file mapped memory
@@ -85,3 +88,4 @@ memcr client:
 memcr-client -l 9000 -p 1234567 --checkpoint
 memcr-client -l 9000 -p 1234567 --restore
 ```
+Due to high priviledges of the memcr daemon it is recommended to run memcr daemon process as non-root user with elevated Linux capabilities and permissions, the details are described in: [doc/security_considerations.md](doc/security_considerations.md)

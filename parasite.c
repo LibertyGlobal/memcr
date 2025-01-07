@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "memcr.h"
 #include "arch/syscall.h"
@@ -208,9 +209,32 @@ void __attribute__((__used__)) service(struct parasite_args *args)
 	if (srvd < 0)
 		die("sys_socket() failed: ", srvd);
 
+	if ((args->addr.sun_path[0] != '\0') && (args->gid > 0)) {
+		ret = sys_fchmod(srvd, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+		if (ret < 0)
+			die("sys_fchmod() failed: ", ret);
+	}
+
 	ret = sys_bind(srvd, (struct sockaddr *)&args->addr, sizeof(args->addr));
 	if (ret < 0)
 		die("sys_bind() failed: ", ret);
+
+	if (args->addr.sun_path[0] != '\0') {
+		if (args->gid > 0) {
+			ret = sys_chown(args->addr.sun_path, -1, args->gid);
+			if (ret < 0)
+				die("sys_chown() failed: ", ret);
+
+			ret = sys_chmod(args->addr.sun_path, 0660);
+			if (ret < 0)
+				die("sys_chmod() failed: ", ret);
+		}
+		else {
+			ret = sys_chmod(args->addr.sun_path, 0600);
+			if (ret < 0)
+				die("sys_chmod() failed: ", ret);
+		}
+	}
 
 	ret = sys_listen(srvd, 1);
 	if (ret < 0)

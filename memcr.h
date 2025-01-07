@@ -32,6 +32,7 @@
 
 struct parasite_args {
 	struct sockaddr_un addr;
+	unsigned long gid;
 	char padding[2];
 };
 

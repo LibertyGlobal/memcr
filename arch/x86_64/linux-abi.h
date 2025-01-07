@@ -59,7 +59,6 @@ static long syscall3(int nr, unsigned long arg0, unsigned long arg1, unsigned lo
 	return ret;
 }
 
-#if 0
 static long syscall4(int nr, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3)
 {
 	register unsigned long r10 asm("r10") = r10;
@@ -72,9 +71,7 @@ static long syscall4(int nr, unsigned long arg0, unsigned long arg1, unsigned lo
 		     : "memory");
 	return ret;
 }
-#endif
 
-#if 0
 static long syscall5(int nr, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4)
 {
 	register unsigned long r10 asm("r10") = r10;
@@ -89,7 +86,6 @@ static long syscall5(int nr, unsigned long arg0, unsigned long arg1, unsigned lo
 		     : "memory");
 	return ret;
 }
-#endif
 
 #if 0
 static long syscall6(int nr, unsigned long arg0, unsigned long arg1, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)

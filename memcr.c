@@ -47,6 +47,8 @@
 #include <sys/user.h>
 #include <sys/param.h> /* MIN(), MAX() */
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/prctl.h>
 
 #ifdef COMPRESS_LZ4
 #include <lz4.h>
@@ -117,6 +119,7 @@ struct vm_area {
 
 static char *dump_dir;
 static char *parasite_socket_dir;
+static int parasite_socket_gid = -1;
 static int parasite_socket_use_netns;
 static int no_wait;
 static int proc_mem;
@@ -439,6 +442,9 @@ static void cleanup_pid(pid_t pid)
 		return;
 
 	snprintf(path, sizeof(path), "%s/memcr%u", parasite_socket_dir, pid);
+	unlink(path);
+
+	snprintf(path, sizeof(path), "%s/memcrRestore%u", parasite_socket_dir, pid);
 	unlink(path);
 }
 
@@ -1099,7 +1105,7 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 	return vmr->len;
 }
 
-static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen)
+static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen, const int gid)
 {
 	int ret;
 	int sd;
@@ -1108,6 +1114,14 @@ static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen)
 	if (sd < 0) {
 		fprintf(stderr, "socket() failed: %m\n");
 		return sd;
+	}
+
+	if ((addr->sa_family == AF_UNIX) && (gid > 0)) {
+		ret = fchmod(sd, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+		if (ret) {
+			fprintf(stderr, "fchmod() failed: %d\n", errno);
+			goto err;
+		}
 	}
 
 	ret = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
@@ -1120,6 +1134,20 @@ static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen)
 	if (ret) {
 		fprintf(stderr, "bind() failed: %m\n");
 		goto err;
+	}
+
+	if ((addr->sa_family == AF_UNIX) && (gid > 0)) {
+		ret = chown(addr->sa_data, -1, gid);
+		if (ret) {
+			fprintf(stderr, "chown() failed: %d\n", errno);
+			goto err;
+		}
+
+		ret = chmod(addr->sa_data, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+		if (ret) {
+			fprintf(stderr, "chmod() failed: %d\n", errno);
+			goto err;
+		}
 	}
 
 	ret = listen(sd, MAX_CLIENT_CONNECTIONS);
@@ -1135,7 +1163,7 @@ err:
 	return -1;
 }
 
-static int setup_listen_unix_socket(const char *client_socket_path)
+static int setup_listen_unix_socket(const char *client_socket_path, const int gid)
 {
 	struct sockaddr_un addr = {
 		.sun_family = AF_UNIX,
@@ -1146,7 +1174,7 @@ static int setup_listen_unix_socket(const char *client_socket_path)
 	fprintf(stdout, "[x] Trying to configure UNIX %s socket.\n", addr.sun_path);
 	unlink(addr.sun_path);
 
-	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr));
+	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr), gid);
 }
 
 static int setup_listen_tcp_socket(int port)
@@ -1159,7 +1187,7 @@ static int setup_listen_tcp_socket(int port)
 
 	fprintf(stdout, "[x] Trying to configure TCP socket on %d port.\n", port);
 
-	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr));
+	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr), -1);
 }
 
 static FILE *fopen_proc(pid_t pid, char *file_name)
@@ -2044,6 +2072,7 @@ static int setup_parasite_args(pid_t pid, void *base)
 	unsigned long *dst = (unsigned long *)PARASITE_ARGS_ADDR(base);
 
 	parasite_socket_init(&pa.addr, pid);
+	pa.gid = (unsigned long)((parasite_socket_gid > 0) ? parasite_socket_gid : 0);
 
 	return poke(pid, dst, src, sizeof(pa));
 }
@@ -2329,10 +2358,25 @@ static struct sockaddr_un make_restore_socket_address(pid_t pid)
 
 	addr_restore.sun_family = PF_UNIX;
 	memset(addr_restore.sun_path, 0, sizeof(addr_restore.sun_path));
-	snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
-	addr_restore.sun_path[0] = '\0';
+	if (parasite_socket_dir) {
+		snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "%s/memcrRestore%u", parasite_socket_dir, pid);
+		addr_restore.sun_path[sizeof(addr_restore.sun_path)-1] = '\0';
+	}
+	else {
+		snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
+		addr_restore.sun_path[sizeof(addr_restore.sun_path)-1] = '\0';
+		addr_restore.sun_path[0] = '\0';
+	}
 
 	return addr_restore;
+}
+
+static void remove_restore_socket_worker(pid_t pid)
+{
+	struct sockaddr_un addr_restore = make_restore_socket_address(pid);
+
+	if (addr_restore.sun_path[0] != '\0')
+		unlink(addr_restore.sun_path);
 }
 
 static int setup_restore_socket_worker(pid_t pid)
@@ -2346,10 +2390,26 @@ static int setup_restore_socket_worker(pid_t pid)
 		return rsd;
 	}
 
+	if (addr_restore.sun_path[0] != '\0') {
+		ret = fchmod(rsd, S_IRUSR | S_IWUSR);
+		if (ret) {
+			fprintf(stderr, "fchmod() failed: %d\n", errno);
+			return  ret;
+		}
+	}
+
 	ret = bind(rsd, (struct sockaddr *)&addr_restore, sizeof(addr_restore));
 	if (ret < 0) {
 		fprintf(stderr, "%s() failed on socket bind.\n", __func__);
 		return ret;
+	}
+
+	if (addr_restore.sun_path[0] != '\0') {
+		ret = chmod(addr_restore.sun_path, S_IRUSR | S_IWUSR);
+		if (ret) {
+			fprintf(stderr, "chmod() failed: %d\n", errno);
+			return  ret;
+		}
 	}
 
 	ret = listen(rsd, 8);
@@ -2462,6 +2522,7 @@ static int application_worker(pid_t pid, int checkpoint_resp_socket)
 
 	close(rsd);
 	close(rd);
+	remove_restore_socket_worker(pid);
 	fprintf(stdout, "[%d] Worker ends.\n", getpid());
 
 	return ret;
@@ -2618,6 +2679,8 @@ retry:
 				close(svc_ctx.cd);
 				close(checkpoint_resp_sockets[0]);
 
+				(void)prctl(PR_SET_NAME, (unsigned long)"memcr_worker", 0, 0, 0);
+
 				ret = application_worker(svc_ctx.svc_cmd.pid, checkpoint_resp_sockets[1]);
 				exit(ret);
 			} else if (forkpid > 0) {
@@ -2721,7 +2784,7 @@ static void service_command(struct service_command_ctx *svc_ctx)
 	}
 }
 
-static int service_mode(const char *listen_location)
+static int service_mode(const char *listen_location, const int gid)
 {
 	int ret;
 	int csd, cd;
@@ -2735,7 +2798,7 @@ static int service_mode(const char *listen_location)
 	if (listen_port > 0)
 		csd = setup_listen_tcp_socket(listen_port);
 	else
-		csd = setup_listen_unix_socket(listen_location);
+		csd = setup_listen_unix_socket(listen_location, gid);
 
 	if (csd < 0)
 		return -1;
@@ -2865,11 +2928,14 @@ static void usage(const char *name, int status)
 		"  -d --dir		dir where memory dump is stored (defaults to /tmp)\n" \
 		"  -S --parasite-socket-dir	dir where socket to communicate with parasite is created\n" \
 		"        (abstract socket will be used if no path specified)\n" \
+		"  -G --parasite-socket-gid	group ID for parasite UNIX domain socket file, valid only for if --parasite-socket-dir provided\n" \
+		"                          	note: the group ID provided need to be common for: the user running memcr daemon and the user running suspended process\n" \
 		"  -N --parasite-socket-netns	use network namespace of parasite when connecting to socket\n" \
 		"        (useful if parasite is running in a container with netns)\n" \
 		"  -l --listen		work as a service waiting for requests on a socket\n" \
 		"        -l PORT: TCP port number to listen for requests on\n" \
 		"        -l PATH: filesystem path for UNIX domain socket file (will be created)\n" \
+		"  -g --listen-gid	group ID for listen UNIX domain socket file, valid only in service mode for UNIX domain socket\n" \
 		"  -n --no-wait		no wait for key press\n" \
 		"  -m --proc-mem		get pages from /proc/pid/mem\n" \
 		"  -f --rss-file		include file mapped memory\n" \
@@ -2901,6 +2967,7 @@ int main(int argc, char *argv[])
 	int option_index;
 	int pid = 0;
 	char *listen_location = NULL;
+	int listen_gid = 0;
 	int encrypt = 0;
 	char *encrypt_arg = NULL;
 
@@ -2909,8 +2976,10 @@ int main(int argc, char *argv[])
 		{ "pid",			1,	NULL,	'p'},
 		{ "dir",			1,	NULL,	'd'},
 		{ "parasite-socket-dir",	1,	NULL,	'S'},
+		{ "parasite-socket-gid",	1,	NULL,	'G'},
 		{ "parasite-socket-netns",	0,	NULL,	'N'},
 		{ "listen",			1,	NULL,	'l'},
+		{ "listen-gid",			1,	NULL,	'g'},
 		{ "no-wait",			0,	NULL,	'n'},
 		{ "proc-mem",			0,	NULL,	'm'},
 		{ "rss-file",			0,	NULL,	'f'},
@@ -2926,7 +2995,7 @@ int main(int argc, char *argv[])
 	parasite_socket_dir = NULL;
 	parasite_socket_use_netns = 0;
 
-	while ((opt = getopt_long(argc, argv, "hp:d:S:Nl:nmfzce::t:V", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, "hp:d:S:G:Nl:g:nmfzce::t:V", long_options, &option_index)) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0], 0);
@@ -2940,12 +3009,18 @@ int main(int argc, char *argv[])
 			case 'S':
 				parasite_socket_dir = optarg;
 				break;
+			case 'G':
+				parasite_socket_gid = atoi(optarg);
+				break;
 			case 'N':
 				parasite_socket_use_netns = 1;
 				break;
 			case 'l':
 				listen_location = optarg;
 				service = 1;
+				break;
+			case 'g':
+				listen_gid = atoi(optarg);
 				break;
 			case 'n':
 				no_wait = 1;
@@ -3020,7 +3095,7 @@ int main(int argc, char *argv[])
 		die("/proc/kpageflags: %m\n");
 
 	if (listen_location)
-		ret = service_mode(listen_location);
+		ret = service_mode(listen_location, listen_gid);
 	else
 		ret = user_interactive_mode(pid);
 

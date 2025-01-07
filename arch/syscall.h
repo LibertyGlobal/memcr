@@ -30,5 +30,9 @@ int sys_bind(int fd, struct sockaddr *addr, socklen_t len);
 int sys_listen(int fd, int n);
 int sys_exit(int error_code);
 long sys_gettid(void);
+int sys_fchmod(int fd, mode_t mode);
+int sys_chmod(char* path, mode_t mode);
+int sys_chown(char* path, uid_t owner, gid_t group);
+int sys_getuid(void);
 
 #endif

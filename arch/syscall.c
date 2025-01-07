@@ -19,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <linux/fcntl.h> /* for O_* and AT_* */
 
 #if defined(__x86_64__)
 #include "x86_64/linux-abi.h"
@@ -87,4 +88,36 @@ int sys_exit(int error_code)
 long sys_gettid(void)
 {
 	return syscall0(__NR_gettid);
+}
+
+int sys_fchmod(int fd, mode_t mode)
+{
+	return syscall2(__NR_fchmod, fd, mode);
+}
+
+int sys_chmod(char* path, mode_t mode)
+{
+#ifdef __NR_fchmodat
+	return syscall4(__NR_fchmodat, AT_FDCWD, (unsigned long)path, mode, 0);
+#elif defined(__NR_chmod)
+	return syscall2(__NR_chmod, (unsigned long)path, mode);
+#else
+	return -ENOSYS;
+#endif
+}
+
+int sys_chown(char* path, uid_t owner, gid_t group)
+{
+#ifdef __NR_fchownat
+	return syscall5(__NR_fchownat, AT_FDCWD, (unsigned long)path, owner, group, 0);
+#elif defined(__NR_chown)
+	return syscall3(__NR_chown, (unsigned long)path, owner, group);
+#else
+	return -ENOSYS;
+#endif
+}
+
+int sys_getuid(void)
+{
+	return syscall0(__NR_getuid);
 }
