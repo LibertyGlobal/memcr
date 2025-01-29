@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -30,10 +31,16 @@
 #define PAGE_SIZE 4096
 #endif
 
+typedef enum {
+	PARASITE_FLAG_NONE = 0,
+	PARASITE_FLAG_USE_PAGEMAP = 1
+} parasite_args_flags;
+
 struct parasite_args {
 	struct sockaddr_un addr;
 	unsigned long gid;
-	char padding[2];
+	unsigned char flags;
+	char padding[1];
 };
 
 /* size must be CPU word aligned for ptrace() peek/poke */
@@ -79,9 +86,23 @@ struct vm_region {
 
 #define VM_REGION_TX 0x01
 
+typedef enum {
+	REGION_REQ_MEM = 0,
+	REGION_REQ_PAGEMAP = 1
+} memcr_region_req_type;
+
 struct vm_region_req {
-	struct vm_region vmr;
-	char flags;
+	union {
+		struct {
+			struct vm_region vmr;
+			char flags;
+		} mem;
+		struct {
+			unsigned long long seek;
+			unsigned long len;
+		} pagemap;
+	} u;
+	memcr_region_req_type type;
 } __attribute__((packed));
 
 struct target_context {

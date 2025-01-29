@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -21,6 +22,7 @@
 
 ssize_t sys_read(int fd, void *buf, size_t count);
 ssize_t sys_write(int fd, const void *buf, size_t count);
+size_t sys_lseek(int fd, size_t off, int whence);
 int sys_close(int fd);
 int sys_mprotect(unsigned long addr, size_t len, unsigned long prot);
 int sys_madvise(unsigned long addr, size_t len, int advice);
@@ -34,5 +36,6 @@ int sys_fchmod(int fd, mode_t mode);
 int sys_chmod(char* path, mode_t mode);
 int sys_chown(char* path, uid_t owner, gid_t group);
 int sys_getuid(void);
+int sys_open(char* path, mode_t mode);
 
 #endif

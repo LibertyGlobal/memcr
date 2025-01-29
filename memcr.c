@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -761,6 +762,17 @@ static int parasite_write(int fd, const void *buf, size_t count)
 	return __write(fd, buf, count, parasite_status_ok);
 }
 
+static int parasite_write_read(int fd, struct vm_region_req* req, void* read_buf, size_t read_len)
+{
+	int ret;
+
+	ret = parasite_write(fd, req, sizeof(struct vm_region_req));
+	if (ret != sizeof(struct vm_region_req))
+		return -1;
+
+	return parasite_read(fd, read_buf, read_len);
+}
+
 static int _read(int fd, void *buf, size_t count)
 {
 	return __read(fd, buf, count, NULL, FALSE);
@@ -1369,7 +1381,15 @@ static void print_target_vmas(struct vm_area vmas[], int nr_vmas, unsigned long 
 #endif
 }
 
-static int open_proc(pid_t pid, char *file_name)
+static int access_proc(const pid_t pid, const char *file_name)
+{
+	char path[128];
+
+	snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
+	return access(path, R_OK);
+}
+
+static int open_proc(const pid_t pid, const char *file_name)
 {
 	int fd;
 	char path[128];
@@ -1402,6 +1422,7 @@ static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, 
 {
 	int ret;
 	unsigned long off;
+	char proc_mem_available = ((proc_mem) && (md > -1));
 	char buf[MAX_VM_REGION_SIZE];
 	struct vm_region vmr = {
 		.addr = addr,
@@ -1409,7 +1430,7 @@ static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, 
 	};
 	struct vm_region_req req;
 
-	if (proc_mem) { /* read region from /proc/pid/mem */
+	if (proc_mem_available) { /* read region from /proc/pid/mem */
 		off = lseek(md, addr, SEEK_SET);
 		if (off != addr) {
 			fprintf(stderr, "lseek() off %lu: %m\n", off);
@@ -1422,13 +1443,14 @@ static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, 
 	}
 
 	/* request region from target if needed and madvise */
-	req.vmr = vmr;
-	req.flags = proc_mem ? 0 : VM_REGION_TX;
+	req.u.mem.vmr = vmr;
+	req.u.mem.flags = proc_mem_available ? 0 : VM_REGION_TX;
+	req.type = REGION_REQ_MEM;
 	ret = parasite_write(cd, &req, sizeof(req));
 	if (ret != sizeof(req))
 		return -1;
 
-	if (!proc_mem) {
+	if (!proc_mem_available) {
 		/* read requested region */
 		ret = parasite_read(cd, &buf, len);
 		if (ret != len)
@@ -1442,9 +1464,9 @@ static int free_vm_region(int cd, unsigned long addr, unsigned long len)
 {
 	int ret;
 	struct vm_region_req req = {
-		.vmr.addr = addr,
-		.vmr.len = len,
-		.flags = 0,
+		.u.mem.vmr.addr = addr,
+		.u.mem.vmr.len = len,
+		.u.mem.flags = 0,
 	};
 
 	ret = parasite_write(cd, &req, sizeof(req));
@@ -1475,6 +1497,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 {
 	int ret;
 	uint64_t off;
+	uint64_t map;
 	unsigned long nrpages;
 	unsigned long idx;
 	unsigned long nrpages_dumpable = 0;
@@ -1483,23 +1506,52 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 	unsigned long region_start = 0;
 	unsigned long region_length = 0;
 
+	struct vm_region_req req;
+	uint64_t *map_buf = NULL;
+
 	nrpages = (vma->end - vma->start) / page_size;
 
 	idx = vma->start / page_size;
 	off = idx * sizeof(uint64_t);
-	off = lseek(pd, off, SEEK_SET);
-	if (off != idx * sizeof(uint64_t)) {
-		fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
-		return -1;
+
+	if (pd > 0) {
+		off = lseek(pd, off, SEEK_SET);
+		if (off != idx * sizeof(uint64_t)) {
+			fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
+			return -1;
+		}
+	}
+	else {
+		req.type = REGION_REQ_PAGEMAP;
+		req.u.pagemap.seek = off;
+		req.u.pagemap.len = nrpages * sizeof(map);
+		map_buf = (uint64_t *)calloc(nrpages, sizeof(map));
+		if (map_buf == NULL) {
+			fprintf(stderr, "calloc(%ld) failed: %m\n", req.u.pagemap.len);
+			return -1;
+		}
 	}
 
 	for (idx = 0; idx < nrpages; idx++) {
-		uint64_t map;
 		unsigned long addr;
 
 		addr = vma->start + idx * page_size;
 
-		ret = read(pd, &map, sizeof(map));
+		if (pd > 0) {
+			ret = read(pd, &map, sizeof(map));
+		}
+		else {
+			if (idx == 0) {
+				ret = parasite_write_read(cd, &req, (void*)map_buf, req.u.pagemap.len);
+				if (ret != req.u.pagemap.len) {
+					fprintf(stderr, "parasite_write_read() %d / %ld\n", ret, req.u.pagemap.len);
+					return -1;
+				}
+			}
+			ret = sizeof(map);
+			map = map_buf[idx];
+		}
+
 		if (ret != sizeof(map)) {
 			fprintf(stderr, "read() %m\n");
 			continue;
@@ -1532,8 +1584,10 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				continue;
 
 			ret = get_vm_region(md, cd, region_start, region_length, fd);
-			if (ret <= 0)
+			if (ret <= 0) {
+				free(map_buf);
 				return ret;
+			}
 
 			region_start = 0;
 			region_length = 0;
@@ -1558,8 +1612,10 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				continue;
 
 			ret = free_vm_region(cd, region_start, region_length);
-			if (ret)
+			if (ret) {
+				free(map_buf);
 				return ret;
+			}
 
 			region_start = 0;
 			region_length = 0;
@@ -1574,6 +1630,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		fprintf(stdout, "\n");
 	}
 
+	free(map_buf);
 	return 0;
 }
 
@@ -1589,7 +1646,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 
 	pd = open_proc(pid, "pagemap");
 	if (pd < 0)
-		goto out;
+		fprintf(stdout, "[i] /proc/pagemap open failed %m, using remote access\n");
 
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
@@ -1739,8 +1796,9 @@ static int target_set_pages(pid_t pid)
 		if (ret <= 0)
 			break;
 
-		req.vmr = vmr;
-		req.flags = 0;
+		req.u.mem.vmr = vmr;
+		req.u.mem.flags = 0;
+		req.type = REGION_REQ_MEM;
 
 		ret = parasite_write(cd, &req, sizeof(req));
 		if (ret != sizeof(req)) {
@@ -2073,6 +2131,7 @@ static int setup_parasite_args(pid_t pid, void *base)
 
 	parasite_socket_init(&pa.addr, pid);
 	pa.gid = (unsigned long)((parasite_socket_gid > 0) ? parasite_socket_gid : 0);
+	pa.flags = (access_proc(pid, "pagemap") < 0) ? PARASITE_FLAG_USE_PAGEMAP : PARASITE_FLAG_NONE;
 
 	return poke(pid, dst, src, sizeof(pa));
 }
@@ -2360,11 +2419,9 @@ static struct sockaddr_un make_restore_socket_address(pid_t pid)
 	memset(addr_restore.sun_path, 0, sizeof(addr_restore.sun_path));
 	if (parasite_socket_dir) {
 		snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "%s/memcrRestore%u", parasite_socket_dir, pid);
-		addr_restore.sun_path[sizeof(addr_restore.sun_path)-1] = '\0';
 	}
 	else {
 		snprintf(addr_restore.sun_path, sizeof(addr_restore.sun_path), "#memcrRestore%u", pid);
-		addr_restore.sun_path[sizeof(addr_restore.sun_path)-1] = '\0';
 		addr_restore.sun_path[0] = '\0';
 	}
 
@@ -3026,6 +3083,8 @@ int main(int argc, char *argv[])
 				no_wait = 1;
 				break;
 			case 'm':
+				if (geteuid() != 0)
+					die(" -m --proc-mem option cannot be used when memcr is run as non-root user\n");
 				proc_mem = 1;
 				break;
 			case 'f':

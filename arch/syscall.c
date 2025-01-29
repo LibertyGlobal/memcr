@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -19,7 +20,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
-#include <linux/fcntl.h> /* for O_* and AT_* */
+#include <linux/fcntl.h> /* for AT_FDCWD */
 
 #if defined(__x86_64__)
 #include "x86_64/linux-abi.h"
@@ -121,3 +122,14 @@ int sys_getuid(void)
 {
 	return syscall0(__NR_getuid);
 }
+
+int sys_open(char* path, mode_t mode)
+{
+	return syscall3(__NR_openat, AT_FDCWD, (unsigned long)path, mode);
+}
+
+size_t sys_lseek(int fd, size_t off, int whence)
+{
+	return syscall3(__NR_lseek, fd, off, whence);
+}
+

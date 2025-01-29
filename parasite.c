@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -20,6 +21,8 @@
 #include <sys/un.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <linux/fcntl.h> /* for O_RDONLY */
+#include <linux/fs.h> /* for SEEK_SET */
 
 #include "memcr.h"
 #include "arch/syscall.h"
@@ -30,6 +33,10 @@
 #define __stringify(x...)	__stringify_1(x)
 
 static int finish;
+static int fpage;
+
+#define PAGEMAP_BUF_SIZE (4096/sizeof(uint64_t))
+static uint64_t pagemap_buf[PAGEMAP_BUF_SIZE];
 
 void service(struct parasite_args *args);
 
@@ -55,7 +62,7 @@ static char *ulong_to_hstr(unsigned long v)
 	return p;
 }
 
-static void print(int fd, const char *msg)
+static void print(const int fd, char *msg)
 {
 	int size;
 
@@ -78,7 +85,7 @@ static void print(int fd, const char *msg)
 } while (0);
 
 
-static int read(int fd, void *buf, int size)
+static int read(const int fd, void *buf, const int size)
 {
 	int ret;
 	int done = 0;
@@ -97,7 +104,7 @@ static int read(int fd, void *buf, int size)
 	return done;
 }
 
-static int write(int fd, const void *buf, int size)
+static int write(const int fd, const void *buf, const int size)
 {
 	int ret;
 	int done = 0;
@@ -113,7 +120,7 @@ static int write(int fd, const void *buf, int size)
 	return done;
 }
 
-static int cmd_mprotect(int cd)
+static int cmd_mprotect(const int cd)
 {
 	int ret;
 	struct vm_mprotect req;
@@ -131,7 +138,7 @@ static int cmd_mprotect(int cd)
 	return 0;
 }
 
-static int cmd_get_pages(int cd)
+static int cmd_get_pages(const int cd)
 {
 	int ret;
 	struct vm_region_req req;
@@ -141,18 +148,48 @@ static int cmd_get_pages(int cd)
 		if (ret == 0)
 			break;
 
-		if (req.flags & VM_REGION_TX)
-			write(cd, (void *)req.vmr.addr, req.vmr.len);
+		if (req.type == REGION_REQ_PAGEMAP) {
+			ssize_t seek_ret;
+			unsigned long read_len;
 
-		ret = sys_madvise(req.vmr.addr, req.vmr.len, MADV_DONTNEED);
-		if (ret < 0)
-			die("sys_madvise() failed: ", ret);
+			if (fpage < 0) {
+				die("/proc/<pid>/pagemap not opened!", 0);
+				break;
+			}
+
+			seek_ret = sys_lseek(fpage, req.u.pagemap.seek, SEEK_SET);
+			if (seek_ret != req.u.pagemap.seek) {
+				write(cd, (void*)&ret, 1);
+				die("sys_lseek() failed: ", seek_ret);
+				continue;
+			}
+
+			while (req.u.pagemap.len) {
+				read_len = (req.u.pagemap.len > PAGEMAP_BUF_SIZE) ? PAGEMAP_BUF_SIZE : req.u.pagemap.len;
+				ret = sys_read(fpage, pagemap_buf, read_len);
+				if (ret != read_len) {
+					write(cd, (void*)&ret, 1);
+					die("sys_read() failed: ", ret);
+					continue;
+				}
+				write(cd, (void*)pagemap_buf, read_len);
+				req.u.pagemap.len -= read_len;
+			}
+		}
+		else {
+			if (req.u.mem.flags & VM_REGION_TX)
+				write(cd, (void *)req.u.mem.vmr.addr, req.u.mem.vmr.len);
+
+			ret = sys_madvise(req.u.mem.vmr.addr, req.u.mem.vmr.len, MADV_DONTNEED);
+			if (ret < 0)
+				die("sys_madvise() failed: ", ret);
+		}
 	}
 
 	return 0;
 }
 
-static int cmd_set_pages(int cd)
+static int cmd_set_pages(const int cd)
 {
 	int ret;
 	struct vm_region_req req;
@@ -162,20 +199,20 @@ static int cmd_set_pages(int cd)
 		if (ret == 0)
 			break;
 
-		read(cd, (void *)req.vmr.addr, req.vmr.len);
+		read(cd, (void *)req.u.mem.vmr.addr, req.u.mem.vmr.len);
 	}
 
 	return 0;
 }
 
-static int cmd_end(int cd)
+static int cmd_end(const int cd)
 {
 	finish = 1;
 
 	return 0;
 }
 
-static int handle_connection(int cd)
+static int handle_connection(const int cd)
 {
 	int ret;
 	char cmd;
@@ -240,6 +277,12 @@ void __attribute__((__used__)) service(struct parasite_args *args)
 	if (ret < 0)
 		die("sys_listen() failed: ", ret);
 
+	if (args->flags & PARASITE_FLAG_USE_PAGEMAP) {
+		fpage = sys_open("/proc/self/pagemap", O_RDONLY);
+		if (fpage < 0)
+			die("open(/proc/self/pagemap) failed: ", fpage);
+	}
+
 	while (!finish) {
 		ret = sys_accept(srvd, NULL, NULL);
 		if (ret < 0)
@@ -249,6 +292,8 @@ void __attribute__((__used__)) service(struct parasite_args *args)
 		sys_close(ret);
 	}
 
+	if (fpage >= 0)
+		sys_close(fpage);
 	sys_close(srvd);
 	sys_exit(0);
 }
