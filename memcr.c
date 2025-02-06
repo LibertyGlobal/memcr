@@ -65,6 +65,7 @@
 #endif
 
 #include "memcr.h"
+#include "memcrclient_proto.h"
 #include "arch/cpu.h"
 #include "arch/enter.h"
 #include "parasite-blob.h"

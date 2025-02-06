@@ -53,26 +53,6 @@ typedef enum {
 	CMD_END,
 } memcr_cmd;
 
-typedef enum {
-	MEMCR_CHECKPOINT = 100,
-	MEMCR_RESTORE
-} memcr_svc_cmd;
-
-struct service_command {
-	memcr_svc_cmd cmd;
-	pid_t pid;
-} __attribute__((packed));
-
-typedef enum {
-	MEMCR_OK = 0,
-	MEMCR_ERROR_GENERAL = -1,
-	MEMCR_INVALID_PID = -2
-} memcr_svc_response;
-
-struct service_response {
-	memcr_svc_response resp_code;
-} __attribute__((packed));
-
 struct vm_mprotect {
 	unsigned long addr;
 	size_t len;
