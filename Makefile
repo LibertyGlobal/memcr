@@ -111,7 +111,7 @@ GOFF = ./gen-offsets.sh
 B ?= .
 
 
-all: $(B)/memcr $(B)/memcr-client
+all: $(B)/memcr $(B)/memcr-client $(B)/libmemcrclient.so
 
 ifeq ($(ENCRYPT), 1)
 all: $(B)/libencrypt.so
@@ -150,11 +150,23 @@ $(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
 	@stat -c "-> %n: %s bytes <-" $@
 	@size $@
 
+$(B)/libmemcrclient.o: libmemcrclient.c
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+$(B)/libmemcrclient.a: $(B)/libmemcrclient.o
+	ar rcs $@ $^
+	@stat -c "-> %n: %s bytes <-" $@
+	@size $@
+
+$(B)/libmemcrclient.so: $(B)/libmemcrclient.o
+	$(CC) $(CFLAGS) -shared -Wl,-soname,$(@F) $^ -o $@
+	@stat -c "-> %n: %s bytes <-" $@
+	@size $@
 
 $(B)/memcr-client.o: memcr-client.c
 	$(CC) $(CFLAGS) -DGIT_VERSION='"$(GIT_VERSION)"' -I$(B) -c $< -o $@
 
-$(B)/memcr-client: $(B)/memcr-client.o
+$(B)/memcr-client: $(B)/memcr-client.o $(B)/libmemcrclient.a
 	$(CC) $(CFLAGS) $^ -o $@
 	@stat -c "-> %n: %s bytes <-" $@
 	@size $@
@@ -175,7 +187,7 @@ endif
 
 
 clean:
-	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client $(B)/libencrypt.so
+	rm -f $(B)/*.o $(B)/*.s $(B)/*.bin $(B)/parasite-blob.h $(B)/memcr $(B)/memcr-client $(B)/*.so $(B)/*.a
 	$(MAKE) -C tests clean
 
 

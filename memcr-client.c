@@ -26,70 +26,7 @@
 #include <stdlib.h>
 
 #include "memcr.h"
-
-static int xconnect(struct sockaddr *addr, socklen_t addrlen)
-{
-	int cd, ret;
-
-	cd = socket(addr->sa_family, SOCK_STREAM, 0);
-	if (cd < 0) {
-		fprintf(stderr, "socket() failed: %m\n");
-		return -1;
-	}
-
-	ret = connect(cd, addr, addrlen);
-	if (ret < 0) {
-		fprintf(stderr, "connect() failed: %m\n");
-		close(cd);
-		return ret;
-	}
-
-	return cd;
-}
-
-static int connect_unix(const char *path)
-{
-	struct sockaddr_un addr = {
-		.sun_family = AF_UNIX,
-	};
-
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
-
-	return xconnect((struct sockaddr *)&addr, sizeof(addr));
-}
-
-static int connect_tcp(int port)
-{
-	struct sockaddr_in addr = {
-		.sin_family = AF_INET,
-		.sin_addr.s_addr = inet_addr("127.0.0.1"),
-		.sin_port = htons(port),
-	};
-
-	return xconnect((struct sockaddr *)&addr, sizeof(addr));
-}
-
-static int send_cmd(int cd, struct service_command cmd)
-{
-	int ret;
-	struct service_response resp = {0};
-
-	ret = write(cd, &cmd, sizeof(struct service_command));
-	if (ret != sizeof(struct service_command)) {
-		fprintf(stderr, "%s() write request failed: ret %d, errno %m\n", __func__, ret);
-		return -1;
-	}
-
-	ret = read(cd, &resp, sizeof(struct service_response));
-	if (ret != sizeof(struct service_response)) {
-		fprintf(stderr, "%s() read response failed: ret %d, errno %m\n", __func__, ret);
-		return -1;
-	}
-
-	fprintf(stdout, "Procedure finished with %s status.\n", MEMCR_OK == resp.resp_code ? "OK" : "ERROR");
-
-	return resp.resp_code;
-}
+#include "libmemcrclient.h"
 
 static void print_version(void)
 {
@@ -117,9 +54,7 @@ int main(int argc, char *argv[])
 	int ret, cd, opt;
 	int checkpoint = 0;
 	int restore = 0;
-	int port = -1;
 	int option_index;
-	struct service_command cmd = {0};
 	char *comm_location = NULL;
 	int pid = 0;
 
@@ -171,12 +106,7 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	port = atoi(comm_location);
-
-	if (port > 0)
-		cd = connect_tcp(port);
-	else
-		cd = connect_unix(comm_location);
+	cd = memcr_client_connect(comm_location);
 
 	if (cd < 0) {
 		fprintf(stderr, "Connection creation failed!\n");
@@ -185,21 +115,16 @@ int main(int argc, char *argv[])
 
 	if (checkpoint) {
 		fprintf(stdout, "Will checkpoint %d.\n", pid);
-		cmd.cmd = MEMCR_CHECKPOINT;
-		cmd.pid = pid;
-		ret = send_cmd(cd, cmd);
+		ret = memcr_client_checkpoint(cd, pid);
 	}
 
 	if (restore) {
 		fprintf(stdout, "Will restore %d.\n", pid);
-		cmd.cmd = MEMCR_RESTORE;
-		cmd.pid = pid;
-		ret = send_cmd(cd, cmd);
+		ret = memcr_client_restore(cd, pid);
 	}
 
 	fprintf(stdout, "Command executed, exiting.\n");
-	close(cd);
+	memcr_client_disconnect(cd);
 
 	return ret;
 }
-
