@@ -18,19 +18,21 @@ make
 ##### compilation options
 You can enable support for compression and checksumming of memory dump file:
  - `COMPRESS_LZ4=1` - requires liblz4
+ - `COMPRESS_ZSTD=1` - requires libzstd
  - `CHECKSUM_MD5=1` - requires libcrypto and openssl headers
 
  There is also `ENCRYPT` option for building `libencrypt.so` that provides sample implementation of encryption layer based on libcrypto API. memcr is not linked with libencrypt.so, but it can be preloaded with `LD_PRELOAD`.
  - `ENCRYPT=1` - requires libcrypto and openssl headers
 
-##### compilation on Ubuntu 22.04:
+##### compilation on Ubuntu 24.04:
 ```
 sudo apt-get install liblz4-dev liblz4-1
+sudo apt-get install libzstd-dev libzstd1
 sudo apt-get install libssl-dev libssl3
 ```
 
 ```
-make COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
+make COMPRESS_LZ4=1 COMPRESS_ZSTD=1 CHECKSUM_MD5=1 ENCRYPT=1
 ```
 
 ##### cross compilation
@@ -52,15 +54,15 @@ memcr -p <target pid>
 ```
 For the list of available options, check memcr help:
 ```
-memcr [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e] [-V]
+memcr [-h] [-p PID] [-d DIR] [-S DIR] [-G gid] [-N] [-l PORT|PATH] [-g gid] [-n] [-m] [-f] [-z lz4|zstd] [-c] [-e] [-t] [-V]
 options:
   -h --help             help
   -p --pid              target process pid
   -d --dir              dir where memory dump is stored (defaults to /tmp)
   -S --parasite-socket-dir      dir where socket to communicate with parasite is created
         (abstract socket will be used if no path specified)
-  -G --parasite-socket-gid     group ID for parasite UNIX domain socket file, valid only for if --parasite-socket-dir provided,
-                               note: the group ID provided need to be common for: the user running memcr daemon and the user running suspended process
+  -G --parasite-socket-gid      group ID for parasite UNIX domain socket file, valid only for if --parasite-socket-dir provided
+                                note: the group ID provided need to be common for: the user running memcr daemon and the user running suspended process
   -N --parasite-socket-netns    use network namespace of parasite when connecting to socket
         (useful if parasite is running in a container with netns)
   -l --listen           work as a service waiting for requests on a socket
@@ -70,12 +72,11 @@ options:
   -n --no-wait          no wait for key press
   -m --proc-mem         get pages from /proc/pid/mem
   -f --rss-file         include file mapped memory
-  -z --compress         compress memory dump
+  -z --compress         compress memory dump with lz4 (default) or zstd
   -c --checksum         enable md5 checksum for memory dump
   -e --encrypt          enable encryption of memory dump
   -t --timeout          timeout in seconds for checkpoint/restore execution in service mode
   -V --version          print version and exit
-
 ```
 memcr also supports client / server scenario where memcr runs as a daemon and listens for commands from a client process. The main reason for supporting this is that memcr needs rather high privileges to hijack target process and it's a good idea to keep it separate from memcr-client that can run in a container with low privileges.
 

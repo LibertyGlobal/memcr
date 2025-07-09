@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2023 Liberty Global Service B.V.
+ * Copyright (C) 2023-2025 Mariusz Kozłowski
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -267,7 +268,7 @@ int lib__init(int enable, const char *arg)
 		return -1;
 	}
 
-	log("using %s, block size %d\n", description, block_size);
+	log("encrypt: %s, block size %d\n", description, block_size);
 
 	return 0;
 }

@@ -14,6 +14,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblz4-dev liblz4-1
+        sudo apt-get install -y libzstd-dev libzstd1
         sudo apt-get install -y libssl-dev libssl3
 
     - name: build
@@ -21,17 +22,27 @@ jobs:
         make CC=clang
         make clean
 
-    - name: build lz4
+    - name: build with lz4
       run: |
-        make CC=clang COMPRESS_LZ4=1
+        make COMPRESS_LZ4=1 CC=clang
         make clean
 
-    - name: build md5
+    - name: build with zstd
       run: |
-        make CC=clang CHECKSUM_MD5=1
+        make COMPRESS_ZSTD=1 CC=clang
         make clean
 
-    - name: build lz4 md5 enc
+    - name: build with md5
       run: |
-        make CC=clang COMPRESS_LZ4=1 CHECKSUM_MD5=1 ENCRYPT=1
+        make CHECKSUM_MD5=1 CC=clang
+        make clean
+
+    - name: build with enc
+      run: |
+        make ENCRYPT=1 CC=clang
+        make clean
+
+    - name: build with lz4 zstd md5 enc
+      run: |
+        make COMPRESS_LZ4=1 COMPRESS_ZSTD=1 CHECKSUM_MD5=1 ENCRYPT=1 CC=clang
         make clean
