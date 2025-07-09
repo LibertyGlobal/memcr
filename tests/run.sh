@@ -79,9 +79,18 @@ for OPT in "" "--proc-mem" "--rss-file" "--proc-mem --rss-file"; do
 	done
 done
 
-# compression tests
+# compression tests: lz4
 if [ "$COMPRESS_LZ4" = 1 ]; then
-	MEMCR_CMD="${DO}$MEMCR -n -f --compress"
+	MEMCR_CMD="${DO}$MEMCR -n -f --compress lz4"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+	done
+fi
+
+# compression tests: zstd
+if [ "$COMPRESS_ZSTD" = 1 ]; then
+	MEMCR_CMD="${DO}$MEMCR -n -f -z zstd"
 
 	for TEST in $TESTS; do
 		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
@@ -115,9 +124,18 @@ if [ "$ENCRYPT" = "1" ]; then
 	done
 fi
 
-# combined tests
+# combined tests: lz4 + md5 + enc
 if [ "$COMPRESS_LZ4" = 1 ] && [ "$CHECKSUM_MD5" = 1 ] && [ "$ENCRYPT" = "1" ]; then
 	MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n -f -z -c -e"
+
+	for TEST in $TESTS; do
+		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
+	done
+fi
+
+# combined tests: zstd + md5 + enc
+if [ "$COMPRESS_ZSTD" = 1 ] && [ "$CHECKSUM_MD5" = 1 ] && [ "$ENCRYPT" = "1" ]; then
+	MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n -f -z ZSTD -c -e"
 
 	for TEST in $TESTS; do
 		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1

@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2022 Liberty Global Service B.V.
+ * Copyright (C) 2022-2025 Mariusz Kozłowski
  * Copyright (C) 2025 Marcin Mikula <marcin.mikula@tooxla.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -51,9 +52,7 @@
 #include <sys/stat.h>
 #include <sys/prctl.h>
 
-#ifdef COMPRESS_LZ4
-#include <lz4.h>
-#endif
+#include "compress.h"
 
 #ifdef CHECKSUM_MD5
 #include <openssl/opensslv.h>
@@ -126,7 +125,7 @@ static int parasite_socket_use_netns;
 static int no_wait;
 static int proc_mem;
 static int rss_file;
-static int compress;
+static char *compress;
 static int checksum;
 static int service;
 static unsigned int timeout;
@@ -157,10 +156,6 @@ static struct vm_area vmas[MAX_VMAS];
 static int nr_vmas;
 
 #define MAX_VM_REGION_SIZE (1 * 1024 * 1024)
-
-#ifdef COMPRESS_LZ4
-#define MAX_LZ4_DST_SIZE LZ4_compressBound(MAX_VM_REGION_SIZE)
-#endif
 
 static pid_t parasite_pid;
 static pid_t parasite_pid_clone;
@@ -812,7 +807,7 @@ static int dump_read(int fd, void *buf, size_t count)
 	if (lib__read)
 		ret = lib__read(fd, buf, count);
 	else
-		ret = __read(fd, buf, count, NULL, FALSE);
+		ret = _read(fd, buf, count);
 
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0)
@@ -829,7 +824,7 @@ static int dump_write(int fd, const void *buf, size_t count)
 	if (lib__write)
 		ret = lib__write(fd, buf, count);
 	else
-		ret = __write(fd, buf, count, NULL);
+		ret = _write(fd, buf, count);
 
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0)
@@ -1050,32 +1045,7 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 	if (!vm_region_valid(vmr))
 		return -1;
 
-#ifdef COMPRESS_LZ4
-	if (compress) {
-		int src_size;
-		char src[MAX_LZ4_DST_SIZE];
-
-		ret = dump_read(fd, &src_size, sizeof(src_size));
-		if (ret != sizeof(src_size))
-			return -1;
-
-		ret = dump_read(fd, src, src_size);
-		if (ret != src_size)
-			return -1;
-
-		ret = LZ4_decompress_safe(src, buf, src_size, MAX_VM_REGION_SIZE);
-		/* fprintf(stdout, "[+] Decompressed %d Bytes back into %d.\n", srcSize, ret); */
-		if (ret <= 0)
-			return -1;
-	} else
-#endif
-	{
-		ret = dump_read(fd, buf, vmr->len);
-		if (ret != vmr->len)
-			return -1;
-	}
-
-	return ret;
+	return compress_read(buf, vmr->len, dump_read, fd);
 }
 
 static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
@@ -1089,33 +1059,7 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 	if (ret != sizeof(struct vm_region))
 		return -1;
 
-#ifdef COMPRESS_LZ4
-	if (compress) {
-		char dst[MAX_LZ4_DST_SIZE];
-		int dst_size;
-
-		dst_size = LZ4_compress_default(buf, dst, vmr->len, MAX_LZ4_DST_SIZE);
-		/* fprintf(stdout, "[+] Compressed %lu Bytes into %d.\n", len, dstSize); */
-		if (dst_size <= 0)
-			return -1;
-
-		ret = dump_write(fd, &dst_size, sizeof(dst_size));
-		if (ret != sizeof(dst_size))
-			return -1;
-
-		ret = dump_write(fd, dst, dst_size);
-		if (ret != dst_size)
-			return -1;
-
-	} else
-#endif
-	{
-		ret = dump_write(fd, buf, vmr->len);
-		if (ret != vmr->len)
-			return -1;
-	}
-
-	return vmr->len;
+	return compress_write(buf, vmr->len, dump_write, fd);
 }
 
 static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen, const int gid)
@@ -2333,10 +2277,13 @@ static int execute_parasite_restore(pid_t pid)
 
 static void sigint_handler(int signal)
 {
+	ssize_t ret;
 	const char *msg = "[i] SIGINT\n";
 
 	interrupted = 1;
-	write(1, msg, strlen(msg));
+
+	ret = write(1, msg, strlen(msg));
+	(void)ret;
 }
 
 static void sigchld_handler_service(int sig, siginfo_t *sip, void *notused)
@@ -2979,7 +2926,7 @@ static void print_version(void)
 static void usage(const char *name, int status)
 {
 	fprintf(status ? stderr : stdout,
-		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-l PORT|PATH] [-n] [-m] [-f] [-z] [-c] [-e] [-V]\n" \
+		"%s [-h] [-p PID] [-d DIR] [-S DIR] [-G gid] [-N] [-l PORT|PATH] [-g gid] [-n] [-m] [-f] [-z lz4|zstd] [-c] [-e] [-t] [-V]\n" \
 		"options:\n" \
 		"  -h --help		help\n" \
 		"  -p --pid		target process pid\n" \
@@ -2997,7 +2944,7 @@ static void usage(const char *name, int status)
 		"  -n --no-wait		no wait for key press\n" \
 		"  -m --proc-mem		get pages from /proc/pid/mem\n" \
 		"  -f --rss-file		include file mapped memory\n" \
-		"  -z --compress		compress memory dump\n" \
+		"  -z --compress		compress memory dump with lz4 (default) or zstd\n" \
 		"  -c --checksum		enable md5 checksum for memory dump\n" \
 		"  -e --encrypt		enable encryption of memory dump\n" \
 		"  -t --timeout		timeout in seconds for checkpoint/restore execution in service mode\n" \
@@ -3041,11 +2988,11 @@ int main(int argc, char *argv[])
 		{ "no-wait",			0,	NULL,	'n'},
 		{ "proc-mem",			0,	NULL,	'm'},
 		{ "rss-file",			0,	NULL,	'f'},
-		{ "compress",			0,	NULL,	'z'},
+		{ "compress",			2,	NULL,	'z'},
 		{ "checksum",			0,	NULL,	'c'},
-		{ "encrypt",			2,	0,	'e'},
-		{ "timeout",			1,	0,	't'},
-		{ "version",			0,	0,	'V'},
+		{ "encrypt",			2,	NULL,	'e'},
+		{ "timeout",			1,	NULL,	't'},
+		{ "version",			0,	NULL,	'V'},
 		{ NULL,				0,	NULL,	0  }
 	};
 
@@ -3092,10 +3039,13 @@ int main(int argc, char *argv[])
 				rss_file = 1;
 				break;
 			case 'z':
-#ifndef COMPRESS_LZ4
-				die("compression not available, recompile with COMPRESS_LZ4=1\n");
-#endif
-				compress = 1;
+				if (optarg)
+					compress = optarg;
+				else if (optind < argc && argv[optind][0] != '-')
+					compress = argv[optind++];
+				else
+					/* default */
+					compress = "lz4";
 				break;
 			case 'c':
 #ifndef CHECKSUM_MD5
@@ -3142,6 +3092,10 @@ int main(int argc, char *argv[])
 	register_signal_handlers();
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
+
+	ret = compress_init(compress, MAX_VM_REGION_SIZE);
+	if (ret)
+		exit(1);
 
 	if (lib__init) {
 		ret = lib__init(encrypt, encrypt_arg);

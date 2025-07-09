@@ -1,5 +1,6 @@
 #
 # Copyright (C) 2022 Liberty Global Service B.V.
+# Copyright (C) 2022-2025 Mariusz Kozłowski
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -36,6 +37,11 @@ LDFLAGS = -lpthread
 ifeq ($(COMPRESS_LZ4), 1)
     MCFLAGS += -DCOMPRESS_LZ4
     LDFLAGS += -llz4
+endif
+
+ifeq ($(COMPRESS_ZSTD), 1)
+    MCFLAGS += -DCOMPRESS_ZSTD
+    LDFLAGS += -lzstd
 endif
 
 ifeq ($(CHECKSUM_MD5), 1)
@@ -142,10 +148,13 @@ $(B)/enter.o: arch/$(ARCH)/enter.c
 $(B)/cpu.o: arch/$(ARCH)/cpu.c
 	$(CC) $(MCFLAGS) -c $^ -o $@
 
+$(B)/compress.o: compress.c compress.h
+	$(CC) $(MCFLAGS) -c $< -o $@
+
 $(B)/memcr.o: memcr.c $(B)/parasite-blob.h
 	$(CC) $(MCFLAGS) -DGIT_VERSION='"$(GIT_VERSION)"' -DARCH_NAME='"$(ARCH)"' -I$(B) -c $< -o $@
 
-$(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o
+$(B)/memcr: $(B)/memcr.o $(B)/cpu.o $(B)/enter.o $(B)/compress.o
 	$(CC) $(MCFLAGS) $^ $(LDFLAGS) -o $@
 	@stat -c "-> %n: %s bytes <-" $@
 	@size $@
@@ -193,18 +202,19 @@ clean:
 
 help:
 	@echo 'Build targets:'
-	@echo '  all            - build all targets'
-	@echo '  memcr          - build memcr binary'
+	@echo '  all             - build all targets'
+	@echo '  memcr           - build memcr binary'
 	@echo ''
 	@echo 'Compilation options:'
-	@echo '  COMPRESS_LZ4=1 - compile in support for memory dump LZ4 compression'
-	@echo '  CHECKSUM_MD5=1 - compile in support for memory dump MD5 checksumming'
-	@echo '  ENCRYPT=1      - compile libencrypt.so that can be preloaded for memcr'
+	@echo '  COMPRESS_LZ4=1  - compile in support for memory dump LZ4 compression'
+	@echo '  COMPRESS_ZSTD=1 - compile in support for memory dump ZSTD compression'
+	@echo '  CHECKSUM_MD5=1  - compile in support for memory dump MD5 checksumming'
+	@echo '  ENCRYPT=1       - compile libencrypt.so that can be preloaded for memcr'
 	@echo ''
 	@echo 'Test targets:'
-	@echo '  tests          - build and run memcr tests'
+	@echo '  tests           - build and run memcr tests'
 	@echo ''
 	@echo 'Clean targets:'
-	@echo '  clean          - remove generated files'
+	@echo '  clean           - remove generated files'
 
 .PHONY: all tests clean help
