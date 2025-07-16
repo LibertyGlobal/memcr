@@ -809,11 +809,6 @@ static int dump_read(int fd, void *buf, size_t count)
 	else
 		ret = _read(fd, buf, count);
 
-#ifdef CHECKSUM_MD5
-	if (checksum && ret > 0)
-		md5_update(&md5_restore_ctx, buf, count);
-#endif
-
 	return ret;
 }
 
@@ -825,11 +820,6 @@ static int dump_write(int fd, const void *buf, size_t count)
 		ret = lib__write(fd, buf, count);
 	else
 		ret = _write(fd, buf, count);
-
-#ifdef CHECKSUM_MD5
-	if (checksum && ret > 0)
-		md5_update(&md5_checkpoint_ctx, buf, count);
-#endif
 
 	return ret;
 }
@@ -1045,7 +1035,14 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 	if (!vm_region_valid(vmr))
 		return -1;
 
-	return compress_read(buf, vmr->len, dump_read, fd);
+	ret = compress_read(buf, vmr->len, dump_read, fd);
+#ifdef CHECKSUM_MD5
+	if (checksum && ret > 0) {
+		md5_update(&md5_restore_ctx, vmr, sizeof(struct vm_region));
+		md5_update(&md5_restore_ctx, buf, vmr->len);
+	}
+#endif
+	return ret;
 }
 
 static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
@@ -1059,7 +1056,14 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 	if (ret != sizeof(struct vm_region))
 		return -1;
 
-	return compress_write(buf, vmr->len, dump_write, fd);
+	ret = compress_write(buf, vmr->len, dump_write, fd);
+#ifdef CHECKSUM_MD5
+	if (checksum && ret > 0) {
+		md5_update(&md5_checkpoint_ctx, vmr, sizeof(struct vm_region));
+		md5_update(&md5_checkpoint_ctx, buf, vmr->len);
+	}
+#endif
+	return ret;
 }
 
 static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen, const int gid)
