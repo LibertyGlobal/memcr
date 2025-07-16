@@ -174,6 +174,8 @@ static struct {
 	.cond = PTHREAD_COND_INITIALIZER,
 };
 
+static size_t dumped_vm_size;
+
 /*
  * man sigaction: For a ptrace(2) event, si_code will contain SIG‐TRAP and have the ptrace event in the high byte:
  * (SIGTRAP | PTRACE_EVENT_foo << 8).
@@ -1029,13 +1031,31 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 	int ret;
 
 	ret = dump_read(fd, vmr, sizeof(struct vm_region));
-	if (ret != sizeof(struct vm_region))
+	if (ret != sizeof(struct vm_region)) {
+		if (ret < 0)
+			fprintf(stderr, "[-] dump_read() failed: %d\n", ret);
+		else if (ret > 0)
+			fprintf(stderr, "[-] dump_read() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
+		/* ret == 0 : EOF */
 		return ret;
+	}
+
+	if (vmr->len > dumped_vm_size) {
+		fprintf(stderr, "[-] read_vm_region() VM region %lx len %ld exceeds dumped size %zu\n", vmr->addr, vmr->len, dumped_vm_size);
+		return -1;
+	}
+
+	dumped_vm_size -= vmr->len;
 
 	if (!vm_region_valid(vmr))
 		return -1;
 
 	ret = compress_read(buf, vmr->len, dump_read, fd);
+	if (ret < 0) {
+		fprintf(stderr, "[-] compress_read() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
+		return ret;
+	}
+
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0) {
 		md5_update(&md5_restore_ctx, vmr, sizeof(struct vm_region));
@@ -1053,10 +1073,22 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 		return -1;
 
 	ret = dump_write(fd, vmr, sizeof(struct vm_region));
-	if (ret != sizeof(struct vm_region))
+	if (ret != sizeof(struct vm_region)) {
+		if (ret < 0)
+			fprintf(stderr, "[-] dump_write() failed: %d\n", ret);
+		else if (ret >= 0)
+			fprintf(stderr, "[-] dump_write() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
 		return -1;
+	}
 
 	ret = compress_write(buf, vmr->len, dump_write, fd);
+	if (ret < 0) {
+		fprintf(stderr, "[-] compress_write() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
+		return ret;
+	}
+
+	dumped_vm_size += vmr->len;
+
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0) {
 		md5_update(&md5_checkpoint_ctx, vmr, sizeof(struct vm_region));
@@ -1850,6 +1882,7 @@ static int cmd_checkpoint(pid_t pid)
 static int cmd_restore(pid_t pid)
 {
 	struct timespec ts;
+	int ret = 1;
 
 	if (!parasite_status_ok()) {
 		return 1;
@@ -1862,8 +1895,13 @@ static int cmd_restore(pid_t pid)
 
 	fprintf(stdout, "[+] uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	target_set_pages(pid);
+	ret = target_set_pages(pid);
 	fprintf(stdout, "[i] upload took %lu ms\n", diff_ms(&ts));
+
+	if (ret) {
+		fprintf(stderr, "target_set_pages() failed\n");
+		return ret;
+	}
 
 #ifdef CHECKSUM_MD5
 	if (checksum) {
@@ -1886,10 +1924,7 @@ static int cmd_restore(pid_t pid)
 			|| (md5_restore_digest_len == 0)
 			|| (md5_checkpoint_digest_len != md5_restore_digest_len)
 			|| (memcmp(md5_checkpoint_digest, md5_restore_digest, md5_restore_digest_len) != 0) ) {
-			printf("[-] dump checksum do not match!\n");
-
-			fprintf(stderr, "[%d] Restore failed! Killing the target app...\n", getpid());
-			kill(pid, SIGKILL);
+			fprintf(stderr, "[-] Checksum mismatch! Checkpoint and restore digests differ!\n");
 			return 1;
 		}
 	}
@@ -2256,8 +2291,13 @@ static int execute_parasite_restore(pid_t pid)
 {
 	unsigned long ret;
 	int status;
+	int err;
 
-	cmd_restore(pid);
+	err = cmd_restore(pid);
+	if (err) {
+		fprintf(stderr, "[-] cmd_restore() failed: %d\n", err);
+		return err;
+	}
 
 	parasite_status_wait(&status);
 
@@ -2457,11 +2497,13 @@ static int checkpoint_worker(pid_t pid)
 
 	ret = seize_target(pid);
 	if (ret)
-		return ret;
+		goto out;
 
 	ret = execute_parasite_checkpoint(pid);
+
+out:
 	if (ret) {
-		fprintf(stderr, "[%d] Parasite checkpoint failed! Killing the target app...\n", getpid());
+		fprintf(stderr, "[%d] %s() Checkpoint failed! Killing the target PID %d...\n", getpid(), __func__, pid);
 		kill(pid, SIGKILL);
 		cleanup_pid(pid);
 		return ret;
@@ -2480,13 +2522,19 @@ static int restore_worker(int rd)
 
 	if (ret < 0 || MEMCR_RESTORE != post_checkpoint_cmd.cmd) {
 		fprintf(stdout, "[%d] Error reading restore command!\n", getpid());
-		return -1;
+		goto out;
 	}
 
 	fprintf(stdout, "[%d] Worker received RESTORE command for %d.\n", getpid(), post_checkpoint_cmd.pid);
 
 	signal(SIGCHLD, SIG_DFL);
 	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
+
+out:
+	if (ret) {
+		fprintf(stderr, "[%d] %s() Restore failed! Killing the target PID %d...\n", getpid(), __func__, post_checkpoint_cmd.pid);
+		kill(post_checkpoint_cmd.pid, SIGKILL);
+	}
 	unseize_target();
 	cleanup_pid(post_checkpoint_cmd.pid);
 
@@ -2884,8 +2932,10 @@ static int user_interactive_mode(pid_t pid)
 		return ret;
 
 	ret = execute_parasite_checkpoint(pid);
-	if (ret)
+	if (ret) {
+		fprintf(stderr, "[!] Parasite checkpoint failed: %d!\n", ret);
 		goto out;
+	}
 
 	if (!no_wait && !interrupted) {
 		long dms;
@@ -2906,8 +2956,17 @@ static int user_interactive_mode(pid_t pid)
 	}
 
 	ret = execute_parasite_restore(pid);
+	if (ret) {
+		fprintf(stderr, "[!] Parasite restore failed: %d!\n", ret);
+		goto out;
+	}
 
 out:
+	if (ret) {
+		fprintf(stderr, "[!] Killing the target PID %d...\n", pid);
+		kill(pid, SIGKILL);
+	}
+
 	unseize_target();
 	cleanup_pid(pid);
 

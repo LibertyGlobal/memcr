@@ -65,20 +65,26 @@ static int lz4_write(const char *src, const size_t len, int (*_write)(int fd, co
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, src, len, _write, fd);
 
 	ret = LZ4_compress_default(src, dst, len, MAX_DATA_SIZE_LZ4);
-	if (ret <= 0)
+	if (ret <= 0) {
+		err("%s() compression error: %d\n", __func__, ret);
 		return -1;
+	}
 
 	dst_len = ret;
 
 	dbg("%s() compressed %zu -> %d bytes\n", __func__, len, dst_len);
 
 	ret = _write(fd, &dst_len, sizeof(dst_len));
-	if (ret != sizeof(dst_len))
+	if (ret != sizeof(dst_len)) {
+		err("%s() write dst_len failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	ret = _write(fd, dst, dst_len);
-	if (ret != dst_len)
+	if (ret != dst_len) {
+		err("%s() write compressed data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	return len;
 }
@@ -92,19 +98,27 @@ static int lz4_read(char *dst, const size_t len, int (*_read)(int fd, void *buf,
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, dst, len, _read, fd);
 
 	ret = _read(fd, &src_len, sizeof(src_len));
-	if (ret != sizeof(src_len))
+	if (ret != sizeof(src_len)) {
+		err("%s() read src_len failed: %d\n", __func__, ret);
 		return -1;
+	}
 
-	if (src_len > sizeof(src))
+	if (src_len > sizeof(src)) {
+		err("%s() src_len %u exceeds buffer size %zu\n", __func__, src_len, sizeof(src));
 		return -1;
+	}
 
 	ret = _read(fd, src, src_len);
-	if (ret != src_len)
+	if (ret != src_len) {
+		err("%s() read compressed data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	ret = LZ4_decompress_safe(src, dst, src_len, len);
-	if (ret <= 0)
+	if (ret <= 0) {
+		err("%s() decompression error: %d\n", __func__, ret);
 		return -1;
+	}
 
 	return len;
 }
@@ -122,7 +136,7 @@ static int zstd_write(const char *src, const size_t len, int (*_write)(int fd, c
 
 	size = ZSTD_compress(dst, MAX_DATA_SIZE_ZSTD, src, len, ZSTD_LEVEL);
 	if (ZSTD_isError(size)) {
-		fprintf(stderr, "compression error: %s\n", ZSTD_getErrorName(size));
+		err("%s() compression error: %s\n", __func__, ZSTD_getErrorName(size));
 		return -1;
 	}
 
@@ -131,12 +145,16 @@ static int zstd_write(const char *src, const size_t len, int (*_write)(int fd, c
 	dbg("%s() compressed %zu -> %d bytes\n", __func__, len, dst_len);
 
 	ret = _write(fd, &dst_len, sizeof(dst_len));
-	if (ret != sizeof(dst_len))
+	if (ret != sizeof(dst_len)) {
+		err("%s() write dst_len failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	ret = _write(fd, dst, dst_len);
-	if (ret != dst_len)
+	if (ret != dst_len) {
+		err("%s() write compressed data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	return len;
 }
@@ -151,19 +169,25 @@ static int zstd_read(char *dst, const size_t len, int (*_read)(int fd, void *buf
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, dst, len, _read, fd);
 
 	ret = _read(fd, &src_len, sizeof(src_len));
-	if (ret != sizeof(src_len))
+	if (ret != sizeof(src_len)) {
+		err("%s() read src_len failed: %d\n", __func__, ret);
 		return -1;
+	}
 
-	if (src_len > sizeof(src))
+	if (src_len > sizeof(src)) {
+		err("%s() src_len %u exceeds buffer size %zu\n", __func__, src_len, sizeof(src));
 		return -1;
+	}
 
 	ret = _read(fd, src, src_len);
-	if (ret != src_len)
+	if (ret != src_len) {
+		err("%s() read compressed data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	size = ZSTD_decompress(dst, len, src, src_len);
 	if (ZSTD_isError(size)) {
-		fprintf(stderr, "decompression error: %s\n", ZSTD_getErrorName(size));
+		err("decompression error: %s\n", ZSTD_getErrorName(size));
 		return -1;
 	}
 
@@ -178,8 +202,10 @@ static int plain_write(const char *src, const size_t len, int (*_write)(int fd, 
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, src, len, _write, fd);
 
 	ret = _write(fd, src, len);
-	if (ret != len)
+	if (ret != len) {
+		err("%s() write data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	return len;
 }
@@ -191,8 +217,10 @@ static int plain_read(char *dst, const size_t len, int (*_read)(int fd, void *bu
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, dst, len, _read, fd);
 
 	ret = _read(fd, dst, len);
-	if (ret != len)
+	if (ret != len) {
+		err("%s() read data failed: %d\n", __func__, ret);
 		return -1;
+	}
 
 	return ret;
 }

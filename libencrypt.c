@@ -100,8 +100,10 @@ int lib__read(int fd, void *buf, size_t count)
 
 	dbg("%s(%d, %p, %d)\n", __func__, fd, buf, (int)count);
 
-	if (!cipher)
+	if (!cipher) {
+		err("cipher not initialized\n");
 		return read(fd, buf, count);
+	}
 
 	if (!ctx) {
 		err("invalid cipher ctx\n");
@@ -165,8 +167,10 @@ int lib__write(int fd, const void *buf, size_t count)
 
 	dbg("%s(%d, %p, %d)\n", __func__, fd, buf, (int)count);
 
-	if (!cipher)
+	if (!cipher) {
+		err("cipher not initialized\n");
 		return write(fd, buf, count);
+	}
 
 	if (!ctx) {
 		err("invalid cipher ctx\n");
