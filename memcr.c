@@ -157,6 +157,12 @@ static int nr_vmas;
 
 #define MAX_VM_REGION_SIZE (1 * 1024 * 1024)
 
+static struct vm_region dumped_vm_regions[MAX_VMAS];
+static int dumped_vm_region_count;
+static int restored_vm_region_count;
+static size_t dumped_vm_size;
+static size_t restored_vm_size;
+
 static pid_t parasite_pid;
 static pid_t parasite_pid_clone;
 static struct target_context ctx;
@@ -173,8 +179,6 @@ static struct {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
 	.cond = PTHREAD_COND_INITIALIZER,
 };
-
-static size_t dumped_vm_size;
 
 /*
  * man sigaction: For a ptrace(2) event, si_code will contain SIG‐TRAP and have the ptrace event in the high byte:
@@ -215,6 +219,7 @@ static int checkpoint_service_socket = SOCKET_INVALID;
 #define FALSE		0
 
 #define MAX_CLIENT_CONNECTIONS		8
+#define RESTORE_RETRY_LIMIT			3
 
 struct service_command_ctx {
 	struct service_command svc_cmd;
@@ -1030,22 +1035,19 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 {
 	int ret;
 
-	ret = dump_read(fd, vmr, sizeof(struct vm_region));
-	if (ret != sizeof(struct vm_region)) {
-		if (ret < 0)
-			fprintf(stderr, "[-] dump_read() failed: %d\n", ret);
-		else if (ret > 0)
-			fprintf(stderr, "[-] dump_read() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
-		/* ret == 0 : EOF */
-		return ret;
+	if (restored_vm_region_count >= dumped_vm_region_count) {
+		return 0; /* EOF */
 	}
 
-	if (vmr->len > dumped_vm_size) {
+	memcpy(vmr, &dumped_vm_regions[restored_vm_region_count], sizeof(struct vm_region));
+	restored_vm_region_count++;
+
+	restored_vm_size += vmr->len;
+
+	if (restored_vm_size > dumped_vm_size) {
 		fprintf(stderr, "[-] read_vm_region() VM region %lx len %ld exceeds dumped size %zu\n", vmr->addr, vmr->len, dumped_vm_size);
 		return -1;
 	}
-
-	dumped_vm_size -= vmr->len;
 
 	if (!vm_region_valid(vmr))
 		return -1;
@@ -1058,7 +1060,6 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0) {
-		md5_update(&md5_restore_ctx, vmr, sizeof(struct vm_region));
 		md5_update(&md5_restore_ctx, buf, vmr->len);
 	}
 #endif
@@ -1072,14 +1073,13 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 	if (!vm_region_valid(vmr))
 		return -1;
 
-	ret = dump_write(fd, vmr, sizeof(struct vm_region));
-	if (ret != sizeof(struct vm_region)) {
-		if (ret < 0)
-			fprintf(stderr, "[-] dump_write() failed: %d\n", ret);
-		else if (ret >= 0)
-			fprintf(stderr, "[-] dump_write() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
+	// Keep vm region headers locally
+	if (dumped_vm_region_count >= MAX_VMAS) {
+		fprintf(stderr, "[-] Too many VM regions, increase MAX_VMAS\n");
 		return -1;
 	}
+
+	dumped_vm_regions[dumped_vm_region_count++] = *vmr;
 
 	ret = compress_write(buf, vmr->len, dump_write, fd);
 	if (ret < 0) {
@@ -1091,7 +1091,6 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 
 #ifdef CHECKSUM_MD5
 	if (checksum && ret > 0) {
-		md5_update(&md5_checkpoint_ctx, vmr, sizeof(struct vm_region));
 		md5_update(&md5_checkpoint_ctx, buf, vmr->len);
 	}
 #endif
@@ -1768,6 +1767,9 @@ static int target_set_pages(pid_t pid)
 		goto out;
 	}
 
+	restored_vm_region_count = 0;
+	restored_vm_size = 0;
+
 	while (1) {
 		struct vm_region vmr;
 		struct vm_region_req req;
@@ -1795,6 +1797,12 @@ static int target_set_pages(pid_t pid)
 	}
 
 out:
+
+	if (restored_vm_size != dumped_vm_size) {
+		fprintf(stderr, "[-] restored VM size %zu does not match dumped VM size %zu\n", restored_vm_size, dumped_vm_size);
+		ret = -1;
+	}
+
 	close(cd);
 	dump_close(fd);
 	return ret;
@@ -1883,24 +1891,31 @@ static int cmd_restore(pid_t pid)
 {
 	struct timespec ts;
 	int ret = 1;
+	int retryCnt = RESTORE_RETRY_LIMIT;
 
+retry:
 	if (!parasite_status_ok()) {
 		return 1;
 	}
+
+	fprintf(stdout, "[+] uploading pages\n");
+	clock_gettime(CLOCK_MONOTONIC, &ts);
 
 #ifdef CHECKSUM_MD5
 	if (checksum)
 		md5_init(&md5_restore_ctx);
 #endif
-
-	fprintf(stdout, "[+] uploading pages\n");
-	clock_gettime(CLOCK_MONOTONIC, &ts);
 	ret = target_set_pages(pid);
 	fprintf(stdout, "[i] upload took %lu ms\n", diff_ms(&ts));
 
 	if (ret) {
 		fprintf(stderr, "target_set_pages() failed\n");
-		return ret;
+		if (retryCnt > 0) {
+			fprintf(stdout, "[i] retrying target_set_pages() (%d retries left)\n", retryCnt);
+			retryCnt--;
+			goto retry;
+		}
+		return 1;
 	}
 
 #ifdef CHECKSUM_MD5
@@ -1920,11 +1935,16 @@ static int cmd_restore(pid_t pid)
 
 		fprintf(stdout, "\n");
 
-		if ( (md5_checkpoint_digest_len == 0)
+		if ((md5_checkpoint_digest_len == 0)
 			|| (md5_restore_digest_len == 0)
 			|| (md5_checkpoint_digest_len != md5_restore_digest_len)
 			|| (memcmp(md5_checkpoint_digest, md5_restore_digest, md5_restore_digest_len) != 0) ) {
 			fprintf(stderr, "[-] Checksum mismatch! Checkpoint and restore digests differ!\n");
+			if (retryCnt > 0) {
+				fprintf(stdout, "[i] retrying target_set_pages() (%d retries left)\n", retryCnt);
+				retryCnt--;
+				goto retry;
+			}
 			return 1;
 		}
 	}
