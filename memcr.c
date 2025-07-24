@@ -1746,6 +1746,7 @@ static int target_set_pages(pid_t pid)
 	char path[PATH_MAX];
 	int cd = -1;
 	int fd = -1;
+	char *buf = NULL;
 
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
@@ -1769,11 +1770,16 @@ static int target_set_pages(pid_t pid)
 
 	restored_vm_region_count = 0;
 	restored_vm_size = 0;
+	buf = (char*)malloc(MAX_VM_REGION_SIZE);
+	if (!buf) {
+		fprintf(stderr, "[-] %s() malloc failed for %d bytes\n", __func__, MAX_VM_REGION_SIZE);
+		ret = -1;
+		goto out;
+	}
 
 	while (1) {
 		struct vm_region vmr;
 		struct vm_region_req req;
-		char buf[MAX_VM_REGION_SIZE];
 
 		ret = read_vm_region(fd, &vmr, buf);
 		if (ret <= 0)
@@ -1789,7 +1795,7 @@ static int target_set_pages(pid_t pid)
 			break;
 		}
 
-		ret = parasite_write(cd, &buf, vmr.len);
+		ret = parasite_write(cd, buf, vmr.len);
 		if (ret != vmr.len) {
 			ret = -1;
 			break;
@@ -1802,6 +1808,9 @@ out:
 		fprintf(stderr, "[-] restored VM size %zu does not match dumped VM size %zu\n", restored_vm_size, dumped_vm_size);
 		ret = -1;
 	}
+
+	if (buf)
+		free(buf);
 
 	close(cd);
 	dump_close(fd);

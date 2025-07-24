@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifdef COMPRESS_LZ4
 #include <lz4.h>
@@ -41,6 +42,10 @@
 
 static size_t max_data_size;
 
+#if defined(COMPRESS_LZ4) || defined(COMPRESS_ZSTD)
+static char *data_buf;
+#endif
+
 compress_write_fn_t compress_write;
 compress_read_fn_t compress_read;
 
@@ -59,12 +64,19 @@ compress_read_fn_t compress_read;
 static int lz4_write(const char *src, const size_t len, int (*_write)(int fd, const void *buf, size_t count), int fd)
 {
 	int ret;
-	char dst[MAX_DATA_SIZE_LZ4];
 	uint32_t dst_len;
 
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, src, len, _write, fd);
 
-	ret = LZ4_compress_default(src, dst, len, MAX_DATA_SIZE_LZ4);
+	if (data_buf == NULL) {
+		data_buf = (char *)malloc(MAX_DATA_SIZE_LZ4);
+		if (data_buf == NULL) {
+			err("%s() Failed to allocate memory for compression buffer\n", __func__);
+			return -1;
+		}
+	}
+
+	ret = LZ4_compress_default(src, data_buf, len, MAX_DATA_SIZE_LZ4);
 	if (ret <= 0) {
 		err("%s() compression error: %d\n", __func__, ret);
 		return -1;
@@ -80,7 +92,7 @@ static int lz4_write(const char *src, const size_t len, int (*_write)(int fd, co
 		return -1;
 	}
 
-	ret = _write(fd, dst, dst_len);
+	ret = _write(fd, data_buf, dst_len);
 	if (ret != dst_len) {
 		err("%s() write compressed data failed: %d\n", __func__, ret);
 		return -1;
@@ -92,10 +104,17 @@ static int lz4_write(const char *src, const size_t len, int (*_write)(int fd, co
 static int lz4_read(char *dst, const size_t len, int (*_read)(int fd, void *buf, size_t count), int fd)
 {
 	int ret;
-	char src[MAX_DATA_SIZE_LZ4];
 	uint32_t src_len;
 
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, dst, len, _read, fd);
+
+	if (data_buf == NULL) {
+		data_buf = (char *)malloc(MAX_DATA_SIZE_LZ4);
+		if (data_buf == NULL) {
+			err("%s() Failed to allocate memory for decompression buffer\n", __func__);
+			return -1;
+		}
+	}
 
 	ret = _read(fd, &src_len, sizeof(src_len));
 	if (ret != sizeof(src_len)) {
@@ -103,18 +122,18 @@ static int lz4_read(char *dst, const size_t len, int (*_read)(int fd, void *buf,
 		return -1;
 	}
 
-	if (src_len > sizeof(src)) {
-		err("%s() src_len %u exceeds buffer size %zu\n", __func__, src_len, sizeof(src));
+	if (src_len > MAX_DATA_SIZE_LZ4) {
+		err("%s() src_len %u exceeds buffer size %d\n", __func__, src_len, MAX_DATA_SIZE_LZ4);
 		return -1;
 	}
 
-	ret = _read(fd, src, src_len);
+	ret = _read(fd, data_buf, src_len);
 	if (ret != src_len) {
 		err("%s() read compressed data failed: %d\n", __func__, ret);
 		return -1;
 	}
 
-	ret = LZ4_decompress_safe(src, dst, src_len, len);
+	ret = LZ4_decompress_safe(data_buf, dst, src_len, len);
 	if (ret <= 0) {
 		err("%s() decompression error: %d\n", __func__, ret);
 		return -1;
@@ -128,13 +147,20 @@ static int lz4_read(char *dst, const size_t len, int (*_read)(int fd, void *buf,
 static int zstd_write(const char *src, const size_t len, int (*_write)(int fd, const void *buf, size_t count), int fd)
 {
 	int ret;
-	char dst[MAX_DATA_SIZE_ZSTD];
 	uint32_t dst_len;
 	size_t size;
 
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, src, len, _write, fd);
 
-	size = ZSTD_compress(dst, MAX_DATA_SIZE_ZSTD, src, len, ZSTD_LEVEL);
+	if (data_buf == NULL) {
+		data_buf = (char *)malloc(MAX_DATA_SIZE_ZSTD);
+		if (data_buf == NULL) {
+			err("%s() Failed to allocate memory for compression buffer\n", __func__);
+			return -1;
+		}
+	}
+
+	size = ZSTD_compress(data_buf, MAX_DATA_SIZE_ZSTD, src, len, ZSTD_LEVEL);
 	if (ZSTD_isError(size)) {
 		err("%s() compression error: %s\n", __func__, ZSTD_getErrorName(size));
 		return -1;
@@ -150,7 +176,7 @@ static int zstd_write(const char *src, const size_t len, int (*_write)(int fd, c
 		return -1;
 	}
 
-	ret = _write(fd, dst, dst_len);
+	ret = _write(fd, data_buf, dst_len);
 	if (ret != dst_len) {
 		err("%s() write compressed data failed: %d\n", __func__, ret);
 		return -1;
@@ -162,11 +188,18 @@ static int zstd_write(const char *src, const size_t len, int (*_write)(int fd, c
 static int zstd_read(char *dst, const size_t len, int (*_read)(int fd, void *buf, size_t count), int fd)
 {
 	int ret;
-	char src[MAX_DATA_SIZE_ZSTD];
 	uint32_t src_len;
 	size_t size;
 
 	dbg("%s(%p, %zu, %p, %d)\n", __func__, dst, len, _read, fd);
+
+	if (data_buf == NULL) {
+		data_buf = (char *)malloc(MAX_DATA_SIZE_ZSTD);
+		if (data_buf == NULL) {
+			err("%s() Failed to allocate memory for decompression buffer\n", __func__);
+			return -1;
+		}
+	}
 
 	ret = _read(fd, &src_len, sizeof(src_len));
 	if (ret != sizeof(src_len)) {
@@ -174,20 +207,20 @@ static int zstd_read(char *dst, const size_t len, int (*_read)(int fd, void *buf
 		return -1;
 	}
 
-	if (src_len > sizeof(src)) {
-		err("%s() src_len %u exceeds buffer size %zu\n", __func__, src_len, sizeof(src));
+	if (src_len > MAX_DATA_SIZE_ZSTD) {
+		err("%s() src_len %u exceeds buffer size %zu\n", __func__, src_len, MAX_DATA_SIZE_ZSTD);
 		return -1;
 	}
 
-	ret = _read(fd, src, src_len);
+	ret = _read(fd, data_buf, src_len);
 	if (ret != src_len) {
 		err("%s() read compressed data failed: %d\n", __func__, ret);
 		return -1;
 	}
 
-	size = ZSTD_decompress(dst, len, src, src_len);
+	size = ZSTD_decompress(dst, len, data_buf, src_len);
 	if (ZSTD_isError(size)) {
-		err("decompression error: %s\n", ZSTD_getErrorName(size));
+		err("%s() decompression error: %s\n", __func__, ZSTD_getErrorName(size));
 		return -1;
 	}
 
