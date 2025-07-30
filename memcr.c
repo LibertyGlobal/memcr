@@ -2261,7 +2261,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	/* mmap space for parasite */
 	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, sizeof(parasite_blob), 0);
 	if (ret >= -4096LU) {
-		fprintf(stdout, "[-] mmap failed: %lx\n", ret);
+		fprintf(stdout, "[-] mmap blob failed: %lx\n", ret);
 		signals_unblock(pid);
 		ctx_restore(pid);
 		return -1;
@@ -2309,10 +2309,16 @@ static int execute_parasite_restore(pid_t pid)
 
 	/* parasite is done, munmap parasite_blob area */
 	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, (unsigned long)ctx.blob, sizeof(parasite_blob));
-	if (ret)
-		fprintf(stderr, "[-] munmap failed: %ld\n", ret);
+	if (ret) {
+		fprintf(stderr, "[-] munmap blob failed: %ld\n", ret);
+		return ret;
+	}
 
-	signals_unblock(pid);
+	ret = signals_unblock(pid);
+	if (ret) {
+		fprintf(stderr, "[-] signals_unblock() failed: %ld\n", ret);
+		return ret;
+	}
 
 	ctx_restore(pid);
 
