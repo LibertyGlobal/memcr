@@ -2,6 +2,8 @@
 
 #set -x
 
+set -eu
+
 # $1 should point to memcr executable
 [ -n "$1" ] || exit 1
 [ -x "$1" ] || exit 2
@@ -19,130 +21,18 @@ fi
 WHITE='\033[37m'
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 BOLD='\033[1m'
 NOFMT='\033[0m'
 
-TEST_CNT=0
-TEST_PIPE=./test-pipe
-
-# remove stale test pipe (if any)
-rm $TEST_PIPE
-
-do_memcr_test()
-{
-	MEMCR_CMD=$1
-	TEST=$2
-
-	TEST_CNT=$((TEST_CNT + 1))
-	echo "${WHITE}[test $TEST_CNT] $MEMCR_CMD for $TEST${NOFMT}"
-
-	mkfifo $TEST_PIPE
-
-	# start the test
-	./$TEST $TEST_PIPE &
-	TPID=$!
-
-	# wait for test to be ready
-	cat $TEST_PIPE
-	rm $TEST_PIPE
-
-	# memcr
-	$MEMCR_CMD -p $TPID
-	if [ $? -ne 0 ]; then
-		kill $TPID
-		echo "${RED}[test $TEST_CNT] failed${NOFMT}"
-		return 1
-	fi
-
-	# stop the test
-	kill -USR1 $TPID
-	wait $TPID
-	if [ $? -ne 0 ]; then
-		echo "${RED}[test $TEST_CNT] failed${NOFMT}"
-		return 1
-	fi
-
-	echo "${GREEN}[test $TEST_CNT] passed${NOFMT}"
-	return 0
-}
-
-TESTS="test-malloc"
-
+TESTS_DONE=0
 TIME_START=$(date +%s%N)
 
-# basic tests
-for OPT in "" "--proc-mem" "--rss-file" "--proc-mem --rss-file"; do
-	MEMCR_CMD="${DO}$MEMCR -n $OPT"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-done
-
-# compression tests: lz4
-if [ "$COMPRESS_LZ4" = 1 ]; then
-	MEMCR_CMD="${DO}$MEMCR -n -f --compress lz4"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-fi
-
-# compression tests: zstd
-if [ "$COMPRESS_ZSTD" = 1 ]; then
-	MEMCR_CMD="${DO}$MEMCR -n -f -z zstd"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-fi
-
-# checksumming tests
-if [ "$CHECKSUM_MD5" = 1 ]; then
-	MEMCR_CMD="${DO}$MEMCR -n -f --checksum"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-fi
-
-# encryption tests
-if [ "$ENCRYPT" = "1" ]; then
-	if [ ! -f ../libencrypt.so ]; then
-		echo "${RED}libencrypt.so not found${NOFMT}"
-		exit 1
-	fi
-
-	for OPT in "--rss-file" "--proc-mem --rss-file"; do
-		for ENC in "" "aes-128-cbc" "aes-192-cbc" "aes-256-cbc"; do
-			MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n $OPT --encrypt $ENC"
-
-			for TEST in $TESTS; do
-				do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-			done
-		done
-	done
-fi
-
-# combined tests: lz4 + md5 + enc
-if [ "$COMPRESS_LZ4" = 1 ] && [ "$CHECKSUM_MD5" = 1 ] && [ "$ENCRYPT" = "1" ]; then
-	MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n -f -z -c -e"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-fi
-
-# combined tests: zstd + md5 + enc
-if [ "$COMPRESS_ZSTD" = 1 ] && [ "$CHECKSUM_MD5" = 1 ] && [ "$ENCRYPT" = "1" ]; then
-	MEMCR_CMD="${DO}env LD_PRELOAD=../libencrypt.so $MEMCR -n -f -z ZSTD -c -e"
-
-	for TEST in $TESTS; do
-		do_memcr_test "$MEMCR_CMD" "$TEST" || exit 1
-	done
-fi
+. ./run_ok_test.sh
+. ./run_corrupt_test.sh
+. ./run_signal_test.sh
 
 TIME_END=$(date +%s%N)
 TIME_ELAPSED_MS=$(((TIME_END - TIME_START) / 1000000))
 
-echo "${BOLD}[+] all $TEST_CNT tests passed, took $TIME_ELAPSED_MS ms${NOFMT}"
+echo "${WHITE}[+] all $TESTS_DONE tests passed, took $TIME_ELAPSED_MS ms${NOFMT}"
