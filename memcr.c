@@ -73,6 +73,10 @@
 #define ARCH_NAME "unknown"
 #endif
 
+/* from kernel include/linux/err.h */
+#define MAX_ERRNO 4095
+#define IS_ERR_VALUE(x) ((unsigned long)(x) >= (unsigned long)-MAX_ERRNO)
+
 #define NT_PRSTATUS 1
 
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
@@ -356,7 +360,7 @@ static void md5_final(unsigned char *md, unsigned int *len, void *ctx)
 }
 #endif
 
-static void parasite_status_signal(pid_t pid, int status)
+static void parasite_status_signal(int status)
 {
 	pthread_mutex_lock(&parasite_watch.lock);
 	parasite_watch.changed = 1;
@@ -449,11 +453,13 @@ static void cleanup_pid(pid_t pid)
 
 static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callback)(pid_t pid))
 {
-	int ret;
+	int ret = -1;
 	char path[PATH_MAX];
 	DIR *task_dir;
 	struct dirent *ent;
 	int nr_threads = 0;
+
+	assert(callback != NULL);
 
 	snprintf(path, sizeof(path), "/proc/%d/task", pid);
 	task_dir = opendir(path);
@@ -466,6 +472,7 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 		pid_t tid;
 		char *eptr;
 
+		ret = 0;
 		tid = strtoul(ent->d_name, &eptr, 0);
 		if (*eptr != '\0')
 			continue;
@@ -1208,6 +1215,8 @@ static void get_target_rss(pid_t tid, struct vm_stats *vms)
 	FILE *f;
 	char buf[1024];
 
+	memset(vms, 0x0, sizeof(struct vm_stats));
+
 	f = fopen_proc(tid, "status");
 	if (!f)
 		return;
@@ -1526,6 +1535,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 				ret = parasite_write_read(cd, &req, (void*)map_buf, req.u.pagemap.len);
 				if (ret != req.u.pagemap.len) {
 					fprintf(stderr, "parasite_write_read() %d / %ld\n", ret, req.u.pagemap.len);
+					free(map_buf);
 					return -1;
 				}
 			}
@@ -1984,7 +1994,7 @@ static int peek(pid_t pid, unsigned long *addr, unsigned long *dst, size_t len)
 
 static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 {
-	int ret;
+	int ret = -1;
 	int i;
 
 	/* len must be a multiple of CPU word size */
@@ -2141,7 +2151,7 @@ static void *parasite_watch_thread(void *ptr)
 		return NULL;
 	}
 
-	parasite_status_signal(pid, status);
+	parasite_status_signal(status);
 
 	return NULL;
 }
@@ -2260,7 +2270,8 @@ static int execute_parasite_checkpoint(pid_t pid)
 
 	/* mmap space for parasite */
 	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, sizeof(parasite_blob), 0);
-	if (ret >= -4096LU) {
+	/* the executed mmap_blob calls directly mmap syscall, which returns errors in range -1 to -4095 */
+	if (IS_ERR_VALUE(ret)) {
 		fprintf(stdout, "[-] mmap blob failed: %lx\n", ret);
 		signals_unblock(pid);
 		ctx_restore(pid);
