@@ -281,6 +281,8 @@ void __attribute__((__used__)) service(struct parasite_args *args)
 		fpage = sys_open("/proc/self/pagemap", O_RDONLY);
 		if (fpage < 0)
 			die("open(/proc/self/pagemap) failed: ", fpage);
+	} else {
+		fpage = -1;
 	}
 
 	while (!finish) {
