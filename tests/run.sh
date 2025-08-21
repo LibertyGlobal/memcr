@@ -31,6 +31,7 @@ TIME_START=$(date +%s%N)
 . ./run_ok_test.sh
 . ./run_corrupt_test.sh
 . ./run_signal_test.sh
+. ./run_fd_test.sh
 
 TIME_END=$(date +%s%N)
 TIME_ELAPSED_MS=$(((TIME_END - TIME_START) / 1000000))

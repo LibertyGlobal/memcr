@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 Mariusz Kozłowski
+ * Copyright (C) 2025 Mariusz Kozłowski
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -26,13 +26,11 @@
 #include <signal.h>
 #include <assert.h>
 
-#define PFX "[test-malloc] "
+#define PFX "[test-fd] "
 
-#define TEST_SIZE (16 * 1024 * 1024) /* 16 MB */
+#define FD_NUM 1000
 
 static volatile sig_atomic_t signalled;
-
-static char mema[TEST_SIZE];
 
 static void sighandler(int num)
 {
@@ -58,7 +56,7 @@ static void notify_ready(const char *pipe)
 int main(int argc, char *argv[])
 {
 	int ret;
-	void *memb;
+	int flags[FD_NUM];
 
 	if (argc < 2)
 		return 1;
@@ -67,19 +65,23 @@ int main(int argc, char *argv[])
 
 	printf(PFX "pid %d\n", getpid());
 
-	memset(mema, 0x5b, sizeof(mema));
+	for (int i = 0; i < FD_NUM - 3; i++) {
+		ret = open("/dev/null", O_RDWR);
+		if (ret == -1) {
+			perror(PFX "open");
+			return 1;
+		}
+	}
 
-	memb = malloc(TEST_SIZE);
-	assert(memb);
+	for (int fd = 0; fd < FD_NUM; fd++) {
+		ret = fcntl(fd, F_GETFD);
+		if (ret == -1) {
+			perror(PFX "fcntl");
+			return 1;
+		}
 
-	memset(mema, 0x5b, sizeof(mema));
-	memcpy(memb, mema, sizeof(mema));
-
-	ret = memcmp(mema, memb, sizeof(mema));
-	assert(ret == 0);
-
-	printf(PFX "mema %d kB @ %p\n", TEST_SIZE / 1024, mema);
-	printf(PFX "memb %d kB @ %p\n", TEST_SIZE / 1024, memb);
+		flags[fd] = ret;
+	}
 
 	printf(PFX "waiting for SIGUSR1\n");
 
@@ -90,11 +92,21 @@ int main(int argc, char *argv[])
 
 	printf(PFX "signalled (%s)\n", strsignal(signalled));
 
-	ret = memcmp(mema, memb, sizeof(mema));
-	assert(ret == 0);
+	/* test that the fds are still open and have the same flags */
+
+	for (int fd = 0; fd < FD_NUM; fd++) {
+		ret = fcntl(fd, F_GETFD);
+
+		if (ret != flags[fd]) {
+			printf(PFX "not ok, %d != %d for fd %d\n", ret, flags[fd], fd);
+			return 1;
+		}
+	}
+
+	for (int fd = 3; fd < FD_NUM; fd++)
+		close(fd);
 
 	printf(PFX "ok\n");
 
-	free(memb);
 	return 0;
 }
