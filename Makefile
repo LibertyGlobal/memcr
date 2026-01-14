@@ -54,6 +54,10 @@ ifeq ($(ENCRYPT), 1)
     MCFLAGS += -fPIC
 endif
 
+ifdef LOG_LEVEL
+	MCFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
+endif
+
 ifeq ("$(origin O)", "command line")
     GCC_O = $(O)
 endif
@@ -210,6 +214,7 @@ help:
 	@echo '  COMPRESS_ZSTD=1 - compile in support for memory dump ZSTD compression'
 	@echo '  CHECKSUM_MD5=1  - compile in support for memory dump MD5 checksumming'
 	@echo '  ENCRYPT=1       - compile libencrypt.so that can be preloaded for memcr'
+	@echo '  LOG_LEVEL=n     - set logging level (0=errors, 1=milestones, 2=logs, 3=verbose)'
 	@echo ''
 	@echo 'Test targets:'
 	@echo '  tests           - build and run memcr tests'

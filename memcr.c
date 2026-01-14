@@ -69,6 +69,40 @@
 #include "arch/enter.h"
 #include "parasite-blob.h"
 
+// --- LOGGING SYSTEM CONFIGURATION ---
+#ifndef LOG_LEVEL
+#define LOG_LEVEL 3
+#endif
+
+/* Level 0: Errors (Highest Priority) */
+#if LOG_LEVEL >= 0
+    #define err(...) fprintf(stderr, "[-] " __VA_ARGS__)
+#else
+    #define err(...) do {} while (0)
+#endif
+
+/* Level 1: Milestones/Important Info */
+#if LOG_LEVEL >= 1
+    #define mil(...) fprintf(stdout, "[x] " __VA_ARGS__)
+#else
+    #define mil(...) do {} while (0)
+#endif
+
+/* Level 2: Standard Logs */
+#if LOG_LEVEL >= 2
+    #define log(...) fprintf(stdout, "[i] " __VA_ARGS__)
+#else
+    #define log(...) do {} while (0)
+#endif
+
+/* Level 3: Verbose Messages */
+#if LOG_LEVEL >= 3
+    #define msg(...) fprintf(stdout, "[+] " __VA_ARGS__)
+#else
+    #define msg(...) do {} while (0)
+#endif
+// -------------------------------------
+
 #ifndef ARCH_NAME
 #define ARCH_NAME "unknown"
 #endif
@@ -91,9 +125,6 @@
 #define PARASITE_CMD_ADDR(start)	(((char *)start) + parasite_blob_offset__parasite_cmd)
 #define PARASITE_ARGS_ADDR(start)	(((char *)start) + parasite_blob_offset__parasite_args)
 
-#define __DEBUG__ fprintf(stderr, "%s: %s() +%d\n", __FILE__, __func__, __LINE__);
-
-
 #define PROT_NONE	0x0
 #define PROT_READ	0x1
 #define PROT_WRITE	0x2
@@ -105,6 +136,7 @@
 #define FLAG_ANON 	0x3		/* anonymous mapping */
 #define FLAG_FILE	0x4		/* file mapped area */
 
+#if LOG_LEVEL >= 2
 static char *flag_desc[5] = {
 	[FLAG_NONE]	= "none",
 	[FLAG_STACK]	= "stck",
@@ -112,6 +144,7 @@ static char *flag_desc[5] = {
 	[FLAG_ANON]	= "anon",
 	[FLAG_FILE]	= "file",
 };
+#endif
 
 #define DEBUG_SIGSET	0
 
@@ -240,7 +273,7 @@ static int service_cmds_push_back(struct service_command_ctx *ctx)
 	int ret = 0;
 	pthread_mutex_lock(&service_cmds_ctx.lock);
 	if (service_cmds_ctx.size >= MAX_CLIENT_CONNECTIONS) {
-		fprintf(stderr, "[-] %s: Commands queue full\n", __func__);
+		err("%s: Commands queue full\n", __func__);
 		ret = 1;
 		goto err;
 	}
@@ -274,7 +307,7 @@ static int service_cmds_wait_and_pop_front(struct service_command_ctx *ctx)
 	} else if (service_cmds_ctx.interrupt == TRUE)
 		ret = 1;
 	else
-		fprintf(stderr, "[-] %s: pthread_cond_wait() failed: %d\n", __func__, ret);
+		err("%s: pthread_cond_wait() failed: %d\n", __func__, ret);
 
 	pthread_mutex_unlock(&service_cmds_ctx.lock);
 	return ret;
@@ -312,7 +345,7 @@ static void md5_init(void *ctx)
 	*ctx_ptr = EVP_MD_CTX_new();
 
 	if (!EVP_DigestInit_ex2(*ctx_ptr, md5_md, NULL)) {
-		fprintf(stdout, "[-] MD5 digest initialization failed.\n");
+		err("MD5 digest initialization failed.\n");
 		EVP_MD_CTX_free(*ctx_ptr);
 		*ctx_ptr = NULL;
 	}
@@ -330,7 +363,7 @@ static void md5_update(void *ctx, const void *data, size_t len)
 		return;
 
 	if (!EVP_DigestUpdate(*ctx_ptr, data, len)) {
-		fprintf(stdout, "[-] Message digest update failed.\n");
+		err("Message digest update failed.\n");
 		EVP_MD_CTX_free(*ctx_ptr);
 		*ctx_ptr = NULL;
 	}
@@ -349,7 +382,7 @@ static void md5_final(unsigned char *md, unsigned int *len, void *ctx)
 		return;
 
 	if (!EVP_DigestFinal_ex(*ctx_ptr, md, len)) {
-		fprintf(stdout, "[-] Message digest finalization failed.\n");
+		err("Message digest finalization failed.\n");
 	}
 	EVP_MD_CTX_free(*ctx_ptr);
 	*ctx_ptr = NULL;
@@ -372,11 +405,11 @@ static void parasite_status_signal(int status)
 		; /* normal exit */
 	else if (WIFSIGNALED(status))
 		if (WTERMSIG(status) == SIGKILL)
-			printf("[-] parasite killed by SIGKILL\n");
+			err("parasite killed by SIGKILL\n");
 		else
-			printf("[i] parasite terminated by signal %d%s\n", WTERMSIG(status), WCOREDUMP(status) ? " (code dumped)" : " ");
+			log("parasite terminated by signal %d%s\n", WTERMSIG(status), WCOREDUMP(status) ? " (code dumped)" : " ");
 	else
-		printf("[-] unhandled parasite status %x\n", status);
+		err("unhandled parasite status %x\n", status);
 }
 
 static int parasite_status_wait(int *status)
@@ -398,11 +431,11 @@ static int parasite_status_wait(int *status)
 		if (ret != ETIMEDOUT)
 			break;
 
-		fprintf(stdout, "[i] waiting for parasite status change\n");
+		log("waiting for parasite status change\n");
 	}
 
 	if (ret)
-		fprintf(stderr, "[-] parasite status cond timedwait failed: %d\n", ret);
+		err("parasite status cond timedwait failed: %d\n", ret);
 
 	pthread_join(parasite_watch.thread_id, NULL);
 
@@ -464,7 +497,7 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 	snprintf(path, sizeof(path), "/proc/%d/task", pid);
 	task_dir = opendir(path);
 	if (!task_dir) {
-		fprintf(stderr, "opendir() %s: %m\n", path);
+		err("opendir() %s: %m\n", path);
 		return -errno;
 	}
 
@@ -478,12 +511,12 @@ static int iterate_pstree(pid_t pid, int skip_self, int max_threads, int (*callb
 			continue;
 
 		if (nr_threads >= max_threads) {
-			fprintf(stderr, "too many threads\n");
+			err("too many threads\n");
 			return -EINVAL;
 		}
 
 		if (skip_self && tid == pid) {
-			printf("skip tid %d == pid %d\n", tid, pid);
+			log("skip tid %d == pid %d\n", tid, pid);
 			continue;
 		}
 
@@ -505,40 +538,40 @@ static int seize_pid(pid_t pid)
 	ret = ptrace(PTRACE_SEIZE, pid, NULL, 0);
 	if (ret) {
 		if (errno == ESRCH) {
-			fprintf(stderr, "ptrace(PTRACE_SEIZE) pid %d: %m, ignoring\n", pid);
+			err("ptrace(PTRACE_SEIZE) pid %d: %m, ignoring\n", pid);
 			return 0;
 		}
 
-		fprintf(stderr, "ptrace(PTRACE_SEIZE) %d pid %d: %m\n", errno, pid);
+		err("ptrace(PTRACE_SEIZE) %d pid %d: %m\n", errno, pid);
 		return 1;
 	}
 
 try_again:
 	ret = ptrace(PTRACE_INTERRUPT, pid, NULL, NULL);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_INTERRUPT) pid %d: %m\n", pid);
+		err("ptrace(PTRACE_INTERRUPT) pid %d: %m\n", pid);
 		return 1;
 	}
 
 	ret = wait4(pid, &status, __WALL, NULL);
 	if (ret < 0) {
-		fprintf(stderr, "wait4() pid %d: %m\n", pid);
+		err("wait4() pid %d: %m\n", pid);
 		return 1;
 	}
 
 	if (ret != pid) {
-		fprintf(stderr, "wrong pid attached ret %d != pid %d\n", ret, pid);
+		err("wrong pid attached ret %d != pid %d\n", ret, pid);
 		return 1;
 	}
 
 	if (!WIFSTOPPED(status)) {
-		fprintf(stderr, "pid %d not stopped after seize, status %x\n", pid, status);
+		err("pid %d not stopped after seize, status %x\n", pid, status);
 		return 1;
 	}
 
 	ret = ptrace(PTRACE_GETSIGINFO, pid, NULL, &si);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_GETSIGINFO) pid %d, %m\n", pid);
+		err("ptrace(PTRACE_GETSIGINFO) pid %d, %m\n", pid);
 		return 1;
 	}
 
@@ -550,7 +583,7 @@ try_again:
 		 */
 		ret = ptrace(PTRACE_CONT, pid, NULL, (void *)(unsigned long)si.si_signo);
 		if (ret) {
-			fprintf(stderr, "can't continue signal handling: %m\n");
+			err("can't continue signal handling: %m\n");
 			return 1;
 		}
 
@@ -559,7 +592,7 @@ try_again:
 
 	ret = ptrace(PTRACE_SETOPTIONS, pid, NULL, (void *)(unsigned long)PTRACE_O_TRACEEXIT);
 	if (ret) {
-		fprintf(stderr, "ptrace(PTRACE_SETOPTIONS) pid %d: %m\n", pid);
+		err("ptrace(PTRACE_SETOPTIONS) pid %d: %m\n", pid);
 		return 1;
 	}
 
@@ -577,17 +610,17 @@ static int seize_target(pid_t pid)
 
 	ret = access(path, F_OK);
 	if (ret) {
-		fprintf(stderr, "%d: No such process\n", pid);
+		err("%d: No such process\n", pid);
 		return 1;
 	}
 
-	printf("[+] seizing target pid %d\n", pid);
+	msg("seizing target pid %d\n", pid);
 
 	ret = iterate_pstree(pid, 0, MAX_THREADS, seize_pid);
 	if (ret)
 		return ret;
 
-	printf("[i] %d %s\n", nr_threads, nr_threads == 1 ? "thread" : "threads");
+	log("%d %s\n", nr_threads, nr_threads == 1 ? "thread" : "threads");
 
 	return 0;
 }
@@ -602,7 +635,7 @@ static int unseize_target(void)
 	int ret = 0;
 	int i;
 
-	printf("[+] unseizing target\n");
+	msg("unseizing target\n");
 
 	for (i = 0; i < nr_threads; i++)
 		ret |= unseize_pid(tids[i]);
@@ -623,11 +656,11 @@ static int parasite_socket_create(pid_t pid)
 		snprintf(netns_path, sizeof(netns_path), "/proc/%d/ns/net", pid);
 		pid_netns = open(netns_path, O_CLOEXEC | O_RDONLY);
 		if (pid_netns < 0) {
-			fprintf(stderr, "open('%s', ) failed: %m\n", netns_path);
+			err("open('%s', ) failed: %m\n", netns_path);
 		} else {
 			cur_netns = open("/proc/self/ns/net", O_CLOEXEC | O_RDONLY);
 			if (cur_netns < 0) {
-				fprintf(stderr, "open('/proc/self/ns/net', ) failed: %m\n");
+				err("open('/proc/self/ns/net', ) failed: %m\n");
 				close(pid_netns);
 				pid_netns = -1;
 			}
@@ -636,7 +669,7 @@ static int parasite_socket_create(pid_t pid)
 		/* switch to network namespace of parasite if available */
 		if (pid_netns >= 0) {
 			if (setns(pid_netns, CLONE_NEWNET) != 0) {
-				fprintf(stderr, "setns() failed: %m\n");
+				err("setns() failed: %m\n");
 			}
 			close(pid_netns);
 		}
@@ -644,13 +677,13 @@ static int parasite_socket_create(pid_t pid)
 
 	cd = socket(PF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	if (cd < 0) {
-		fprintf(stderr, "socket() failed: %m\n");
+		err("socket() failed: %m\n");
 	}
 
 	/* restore original network namespace if available */
 	if (cur_netns >= 0) {
 		if (setns(cur_netns, CLONE_NEWNET) != 0) {
-			fprintf(stderr, "setns() failed: %m\n");
+			err("setns() failed: %m\n");
 		}
 		close(cur_netns);
 	}
@@ -680,7 +713,7 @@ retry:
 			usleep(1*1000);
 			goto retry;
 		} else {
-			fprintf(stderr, "connect() to %s failed: %m\n", addr.sun_path + 1);
+			err("connect() to %s failed: %m\n", addr.sun_path + 1);
 			close(cd);
 			return -1;
 		}
@@ -712,7 +745,7 @@ static int __read(int fd, void *buf, size_t count, int (*check_peer_ok)(void), i
 			}
 
 			if (silent == FALSE)
-				fprintf(stderr, "[-] %s() failed: %m\n", __func__);
+				err("%s() failed: %m\n", __func__);
 
 			break;
 		}
@@ -742,7 +775,7 @@ static int __write(int fd, const void *buf, size_t count, int (*check_peer_ok)(v
 				if (check_peer_ok())
 					continue;
 
-			fprintf(stderr, "[-] %s() failed: %m\n", __func__);
+			err("%s() failed: %m\n", __func__);
 			break;
 		}
 
@@ -847,16 +880,16 @@ static void init_pid_checkpoint_data(pid_t pid)
 		}
 	}
 	pthread_mutex_unlock(&checkpoint_service_data_lock);
-	fprintf(stderr, "%s: Checkpoint data PIDs limit exceeded!\n", __func__);
+	err("%s: Checkpoint data PIDs limit exceeded!\n", __func__);
 }
 
 static void cleanup_checkpointed_pids(void)
 {
-	fprintf(stdout, "[i] Terminating checkpointed processes\n");
+	log("Terminating checkpointed processes\n");
 	pthread_mutex_lock(&checkpoint_service_data_lock);
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpoint_service_data[i].pid != PID_INVALID) {
-			fprintf(stdout, "[i] Killing PID %d\n", checkpoint_service_data[i].pid);
+			log("Killing PID %d\n", checkpoint_service_data[i].pid);
 			kill(checkpoint_service_data[i].pid, SIGKILL);
 			cleanup_pid(checkpoint_service_data[i].pid);
 			checkpoint_service_data[i].pid = PID_INVALID;
@@ -875,7 +908,7 @@ static void send_checkpoint_abort(int sd)
 	cmd.cmd = MEMCR_RESTORE;
 	int ret = _write(sd, &cmd, sizeof(cmd));
 	if (ret != sizeof(cmd)) {
-		fprintf(stdout, "[-] Command abort checkpoint write failed\n");
+		err("Command abort checkpoint write failed\n");
 		return;
 	}
 }
@@ -896,7 +929,7 @@ static void set_pid_checkpointing(pid_t pid, int cmd_sd)
 		}
 	}
 	pthread_mutex_unlock(&checkpoint_service_data_lock);
-	fprintf(stderr, "%s: PID not found!\n", __func__);
+	err("%s: PID not found!\n", __func__);
 }
 
 static void set_pid_checkpointed(pid_t pid, pid_t worker)
@@ -913,7 +946,7 @@ static void set_pid_checkpointed(pid_t pid, pid_t worker)
 		}
 	}
 	pthread_mutex_unlock(&checkpoint_service_data_lock);
-	fprintf(stderr, "%s: PID not found!\n", __func__);
+	err("%s: PID not found!\n", __func__);
 }
 
 static void clear_pid_checkpoint_data(pid_t pid)
@@ -934,7 +967,7 @@ static void clear_pid_on_worker_exit_non_blocking(pid_t worker)
 {
 	for (int i=0; i<CHECKPOINTED_PIDS_LIMIT; ++i) {
 		if (checkpoint_service_data[i].worker == worker) {
-			fprintf(stdout, "[+] Clearing pid: %d with worker: %d on worker exit ...\n",
+			msg("Clearing pid: %d with worker: %d on worker exit ...\n",
 				checkpoint_service_data[i].pid, worker);
 			cleanup_pid(checkpoint_service_data[i].pid);
 			checkpoint_service_data[i].pid = PID_INVALID;
@@ -1021,12 +1054,12 @@ static int is_checkpoint_aborted(void)
 static int vm_region_valid(const struct vm_region *vmr)
 {
 	if (vmr->addr & (page_size - 1)) {
-		fprintf(stderr, "[-] vm region addr %lx is not page aligned (off by 0x%lx)\n", vmr->addr, vmr->addr & (page_size - 1));
+		err("vm region addr %lx is not page aligned (off by 0x%lx)\n", vmr->addr, vmr->addr & (page_size - 1));
 		return 0;
 	}
 
 	if (vmr->len % page_size) {
-		fprintf(stderr, "[-] vm region len %ld is not multiple of page size %u\n", vmr->len, page_size);
+		err("vm region len %ld is not multiple of page size %u\n", vmr->len, page_size);
 		return 0;
 	}
 
@@ -1040,15 +1073,15 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 	ret = dump_read(fd, vmr, sizeof(struct vm_region));
 	if (ret != sizeof(struct vm_region)) {
 		if (ret < 0)
-			fprintf(stderr, "[-] dump_read() failed: %d\n", ret);
+			err("dump_read() failed: %d\n", ret);
 		else if (ret > 0)
-			fprintf(stderr, "[-] dump_read() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
+			err("dump_read() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
 		/* ret == 0 : EOF */
 		return ret;
 	}
 
 	if (vmr->len > dumped_vm_size) {
-		fprintf(stderr, "[-] read_vm_region() VM region %lx len %ld exceeds dumped size %zu\n", vmr->addr, vmr->len, dumped_vm_size);
+		err("read_vm_region() VM region %lx len %ld exceeds dumped size %zu\n", vmr->addr, vmr->len, dumped_vm_size);
 		return -1;
 	}
 
@@ -1059,7 +1092,7 @@ static int read_vm_region(int fd, struct vm_region *vmr, char *buf)
 
 	ret = compress_read(buf, vmr->len, dump_read, fd);
 	if (ret < 0) {
-		fprintf(stderr, "[-] compress_read() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
+		err("compress_read() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
 		return ret;
 	}
 
@@ -1082,15 +1115,15 @@ static int write_vm_region(int fd, const struct vm_region *vmr, const void *buf)
 	ret = dump_write(fd, vmr, sizeof(struct vm_region));
 	if (ret != sizeof(struct vm_region)) {
 		if (ret < 0)
-			fprintf(stderr, "[-] dump_write() failed: %d\n", ret);
+			err("dump_write() failed: %d\n", ret);
 		else if (ret >= 0)
-			fprintf(stderr, "[-] dump_write() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
+			err("dump_write() returned %d bytes, expected %zu\n", ret, sizeof(struct vm_region));
 		return -1;
 	}
 
 	ret = compress_write(buf, vmr->len, dump_write, fd);
 	if (ret < 0) {
-		fprintf(stderr, "[-] compress_write() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
+		err("compress_write() failed: %d for VM region %lx len %ld\n", ret, vmr->addr, vmr->len);
 		return ret;
 	}
 
@@ -1112,47 +1145,47 @@ static int setup_listen_socket(struct sockaddr *addr, socklen_t addrlen, const i
 
 	sd = socket(addr->sa_family, SOCK_STREAM, 0);
 	if (sd < 0) {
-		fprintf(stderr, "socket() failed: %m\n");
+		err("socket() failed: %m\n");
 		return sd;
 	}
 
 	if ((addr->sa_family == AF_UNIX) && (gid > 0)) {
 		ret = fchmod(sd, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 		if (ret) {
-			fprintf(stderr, "fchmod() failed: %d\n", errno);
+			err("fchmod() failed: %d\n", errno);
 			goto err;
 		}
 	}
 
 	ret = setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
 	if (ret) {
-		fprintf(stderr, "setsockopt() failed: %m\n");
+		err("setsockopt() failed: %m\n");
 		goto err;
 	}
 
 	ret = bind(sd, addr, addrlen);
 	if (ret) {
-		fprintf(stderr, "bind() failed: %m\n");
+		err("bind() failed: %m\n");
 		goto err;
 	}
 
 	if ((addr->sa_family == AF_UNIX) && (gid > 0)) {
 		ret = chown(addr->sa_data, -1, gid);
 		if (ret) {
-			fprintf(stderr, "chown() failed: %d\n", errno);
+			err("chown() failed: %d\n", errno);
 			goto err;
 		}
 
 		ret = chmod(addr->sa_data, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 		if (ret) {
-			fprintf(stderr, "chmod() failed: %d\n", errno);
+			err("chmod() failed: %d\n", errno);
 			goto err;
 		}
 	}
 
 	ret = listen(sd, MAX_CLIENT_CONNECTIONS);
 	if (ret) {
-		fprintf(stderr, "listen() failed: %m\n");
+		err("listen() failed: %m\n");
 		goto err;
 	}
 
@@ -1171,7 +1204,7 @@ static int setup_listen_unix_socket(const char *client_socket_path, const int gi
 
 	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", client_socket_path);
 
-	fprintf(stdout, "[x] Trying to configure UNIX %s socket.\n", addr.sun_path);
+	mil("Trying to configure UNIX %s socket.\n", addr.sun_path);
 	unlink(addr.sun_path);
 
 	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr), gid);
@@ -1185,7 +1218,7 @@ static int setup_listen_tcp_socket(int port)
 		.sin_port = htons(port),
 	};
 
-	fprintf(stdout, "[x] Trying to configure TCP socket on %d port.\n", port);
+	mil("Trying to configure TCP socket on %d port.\n", port);
 
 	return setup_listen_socket((struct sockaddr *)&addr, sizeof(addr), -1);
 }
@@ -1198,7 +1231,7 @@ static FILE *fopen_proc(pid_t pid, char *file_name)
 	snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
 	f = fopen(path, "r");
 	if (!f)
-		fprintf(stderr, "fopen() %s failed: %m\n", path);
+		err("fopen() %s failed: %m\n", path);
 
 	return f;
 }
@@ -1240,20 +1273,20 @@ static void get_target_rss(pid_t tid, struct vm_stats *vms)
 
 static void show_target_rss(struct vm_stats *a, struct vm_stats *b)
 {
-	printf("[i] vm stats\n");
-	printf("[i]   VmRSS    %lu kB -> %lu kB (diff %lu kB)\n", a->VmRSS, b->VmRSS, a->VmRSS - b->VmRSS);
+	log("vm stats\n");
+	log("  VmRSS    %lu kB -> %lu kB (diff %lu kB)\n", a->VmRSS, b->VmRSS, a->VmRSS - b->VmRSS);
 
 	if (a->RssAnon == -1) /* likely no support in kernel */
 		return;
 
-	printf("[i]   RssAnon  %lu kB -> %lu kB (diff %lu kB)\n", a->RssAnon, b->RssAnon, a->RssAnon - b->RssAnon);
+	log("  RssAnon  %lu kB -> %lu kB (diff %lu kB)\n", a->RssAnon, b->RssAnon, a->RssAnon - b->RssAnon);
 
 	if (rss_file)
-		printf("[i]   RssFile  %lu kB -> %lu kB (diff %lu kB)\n", a->RssFile, b->RssFile, a->RssFile - b->RssFile);
+		log("  RssFile  %lu kB -> %lu kB (diff %lu kB)\n", a->RssFile, b->RssFile, a->RssFile - b->RssFile);
 	else
-		printf("[i]   RssFile  %lu kB\n", a->RssFile);
+		log("  RssFile  %lu kB\n", a->RssFile);
 
-	printf("[i]   RssShmem %lu kB\n", a->RssShmem);
+	log("  RssShmem %lu kB\n", a->RssShmem);
 }
 
 static int should_skip_range(unsigned long start, unsigned long end)
@@ -1261,6 +1294,7 @@ static int should_skip_range(unsigned long start, unsigned long end)
 	return ctx.blob >= (unsigned long *)start && ctx.blob < (unsigned long *)end;
 }
 
+#if LOG_LEVEL >= 2
 static unsigned long get_vmas_size(struct vm_area vmas[], int nr_vmas)
 {
 	unsigned long size = 0;
@@ -1271,6 +1305,7 @@ static unsigned long get_vmas_size(struct vm_area vmas[], int nr_vmas)
 
 	return size;
 }
+#endif
 
 static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 {
@@ -1293,7 +1328,7 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 
 		ret = sscanf(buf, "%lx-%lx %c%c%c%c %lx %x:%x %lu %123s", &start, &end, &r, &w, &x, &s, &pgoff, &dev_maj, &dev_min, &ino, file_path);
 		if (ret < 10) {
-			fprintf(stderr, "can't parse: %s", buf);
+			err("can't parse: %s", buf);
 			goto err;
 		}
 
@@ -1317,18 +1352,18 @@ static int scan_target_vmas(pid_t pid, struct vm_area vmas[], int *nr_vmas)
 		}
 
 		if (s == 's') {
-			fprintf(stdout, "[i] shared VMA %0*lx..%0*lx %s\n", 2 * (int)sizeof(unsigned long), start, 2 * (int)sizeof(unsigned long), end, file_path);
+			log("shared VMA %0*lx..%0*lx %s\n", 2 * (int)sizeof(unsigned long), start, 2 * (int)sizeof(unsigned long), end, file_path);
 			continue;
 		}
 
 		/* skip vma that is not private */
 		if (s != 'p') {
-			fprintf(stderr, "unhandled VMA: %s", buf);
+			err("unhandled VMA: %s", buf);
 			assert(s == 'p');
 		}
 
 		if (*nr_vmas == MAX_VMAS) {
-			fprintf(stderr, "reached MAX_VMAS!\n");
+			err("reached MAX_VMAS!\n");
 			continue;
 		}
 
@@ -1360,7 +1395,11 @@ static void print_target_vmas(struct vm_area vmas[], int nr_vmas, unsigned long 
 	int idx;
 #endif
 
-	fprintf(stdout, "[i] %d candidate VMAs, VSS %ld kB, RSS %lu kB\n", nr_vmas, get_vmas_size(vmas, nr_vmas) / 1024, RSS);
+#if LOG_LEVEL >= 2
+	log("%d candidate VMAs, VSS %ld kB, RSS %lu kB\n", nr_vmas, get_vmas_size(vmas, nr_vmas) / 1024, RSS);
+#else
+    (void)vmas; (void)nr_vmas; (void)RSS;
+#endif
 
 #if 0
 	for (idx = 0; idx < nr_vmas; idx++) {
@@ -1387,7 +1426,7 @@ static int open_proc(const pid_t pid, const char *file_name)
 	snprintf(path, sizeof(path), "/proc/%d/%s", pid, file_name);
 	fd = open(path, O_RDONLY);
 	if (fd == -1)
-		fprintf(stderr, "open() %s failed: %m\n", path);
+		err("open() %s failed: %m\n", path);
 
 	return fd;
 }
@@ -1423,7 +1462,7 @@ static int get_vm_region(int md, int cd, unsigned long addr, unsigned long len, 
 	if (proc_mem_available) { /* read region from /proc/pid/mem */
 		off = lseek(md, addr, SEEK_SET);
 		if (off != addr) {
-			fprintf(stderr, "lseek() off %lu: %m\n", off);
+			err("lseek() off %lu: %m\n", off);
 			return -1;
 		}
 
@@ -1473,7 +1512,7 @@ static int page_unevictable(uint64_t pfn)
 
 	ret = pread(kpageflags_fd, &flags, sizeof(uint64_t), pfn * sizeof(uint64_t));
 	if (ret != sizeof(uint64_t)) {
-		fprintf(stderr, "pread() failed: %m\n");
+		err("pread() failed: %m\n");
 		return 0;
 	}
 
@@ -1507,7 +1546,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 	if (pd > 0) {
 		off = lseek(pd, off, SEEK_SET);
 		if (off != idx * sizeof(uint64_t)) {
-			fprintf(stderr, "lseek() off %lu: %m\n", (unsigned long)off);
+			err("lseek() off %lu: %m\n", (unsigned long)off);
 			return -1;
 		}
 	}
@@ -1517,7 +1556,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		req.u.pagemap.len = nrpages * sizeof(map);
 		map_buf = (uint64_t *)calloc(nrpages, sizeof(map));
 		if (map_buf == NULL) {
-			fprintf(stderr, "calloc(%ld) failed: %m\n", req.u.pagemap.len);
+			err("calloc(%ld) failed: %m\n", req.u.pagemap.len);
 			return -1;
 		}
 	}
@@ -1534,7 +1573,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 			if (idx == 0) {
 				ret = parasite_write_read(cd, &req, (void*)map_buf, req.u.pagemap.len);
 				if (ret != req.u.pagemap.len) {
-					fprintf(stderr, "parasite_write_read() %d / %ld\n", ret, req.u.pagemap.len);
+					err("parasite_write_read() %d / %ld\n", ret, req.u.pagemap.len);
 					free(map_buf);
 					return -1;
 				}
@@ -1544,7 +1583,7 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 		}
 
 		if (ret != sizeof(map)) {
-			fprintf(stderr, "read() %m\n");
+			err("read() %m\n");
 			continue;
 		}
 
@@ -1615,10 +1654,11 @@ static int get_vma_pages(int pd, int md, int cd, struct vm_area *vma, int fd)
 	}
 
 	if (nrpages_dumpable) {
-		fprintf(stdout, "[i]   %0*lx..%0*lx  %s %6ld kB", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, flag_desc[vma->flags], (nrpages_dumpable * page_size) / 1024);
+#if LOG_LEVEL >= 2
+		log("  %0*lx..%0*lx  %s %6ld kB\n", 2 * (int)sizeof(unsigned long), vma->start, 2 * (int)sizeof(unsigned long), vma->end, flag_desc[vma->flags], (nrpages_dumpable * page_size) / 1024);
 		if (nrpages_unevictable)
-			fprintf(stdout, " (unevictable %ld kB)", (nrpages_unevictable * page_size) / 1024);
-		fprintf(stdout, "\n");
+			log(" \t(unevictable %ld kB)\n", (nrpages_unevictable * page_size) / 1024);
+#endif
 	}
 
 	free(map_buf);
@@ -1637,13 +1677,13 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 
 	pd = open_proc(pid, "pagemap");
 	if (pd < 0)
-		fprintf(stdout, "[i] /proc/pagemap open failed %m, using remote access\n");
+		log("/proc/pagemap open failed %m, using remote access\n");
 
 	snprintf(path, sizeof(path), "%s/pages-%d.img", dump_dir, pid);
 
 	fd = dump_open(path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
 	if (fd < 0) {
-		fprintf(stderr, "%s() open failed with: %m\n", __func__);
+		err("%s() open failed with: %m\n", __func__);
 		return -1;
 	}
 
@@ -1669,7 +1709,7 @@ static int get_target_pages(int pid, struct vm_area vmas[], int nr_vmas)
 
 	for (idx = 0; idx < nr_vmas; idx++) {
 		if (is_checkpoint_aborted()) {
-			fprintf(stdout, "[i] get target pages aborted\n");
+			log("get target pages aborted\n");
 			break;
 		}
 
@@ -1762,7 +1802,7 @@ static int target_set_pages(pid_t pid)
 
 	fd = dump_open(path, O_RDONLY, 0);
 	if (fd < 0) {
-		fprintf(stderr, "[-] %s() open failed with: %m\n", __func__);
+		err("%s() open failed with: %m\n", __func__);
 		return -1;
 	}
 
@@ -1798,7 +1838,7 @@ static int target_set_pages(pid_t pid)
 		}
 
 		ret = parasite_write(cd, &buf, vmr.len);
-		if (ret != vmr.len) {
+		if (ret != (int)vmr.len) {
 			ret = -1;
 			break;
 		}
@@ -1827,6 +1867,7 @@ static int target_cmd_end(int pid)
 	return ret;
 }
 
+#if LOG_LEVEL >= 2
 static long diff_ms(struct timespec *ts)
 {
 	struct timespec tsn;
@@ -1835,6 +1876,7 @@ static long diff_ms(struct timespec *ts)
 
 	return (tsn.tv_sec*1000 + tsn.tv_nsec/1000000) - (ts->tv_sec*1000 + ts->tv_nsec/1000000);
 }
+#endif
 
 static int cmd_checkpoint(pid_t pid)
 {
@@ -1843,13 +1885,13 @@ static int cmd_checkpoint(pid_t pid)
 	struct timespec ts;
 
 	if (parasite_pid != parasite_pid_clone)
-		fprintf(stdout, "[i] parasite pid %d (namespace pid %d)\n", parasite_pid, parasite_pid_clone);
+		log("parasite pid %d (namespace pid %d)\n", parasite_pid, parasite_pid_clone);
 	else
-		fprintf(stdout, "[i] parasite pid %d\n", parasite_pid);
+		log("parasite pid %d\n", parasite_pid);
 
 	ret = scan_target_vmas(pid, vmas, &nr_vmas);
 	if (ret) {
-		fprintf(stderr, "[-] scan_target_vmas() failed: ret %d\n", ret);
+		err("scan_target_vmas() failed: ret %d\n", ret);
 		return 1;
 	}
 
@@ -1857,7 +1899,7 @@ static int cmd_checkpoint(pid_t pid)
 
 	print_target_vmas(vmas, nr_vmas, vms_a.VmRSS);
 
-	fprintf(stdout, "[+] mprotect off\n");
+	msg("mprotect off\n");
 	target_mprotect_off(pid);
 
 #ifdef CHECKSUM_MD5
@@ -1865,7 +1907,7 @@ static int cmd_checkpoint(pid_t pid)
 		md5_init(&md5_checkpoint_ctx);
 #endif
 
-	fprintf(stdout, "[+] downloading pages\n");
+	msg("downloading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	ret = get_target_pages(pid, vmas, nr_vmas);
 
@@ -1875,12 +1917,12 @@ static int cmd_checkpoint(pid_t pid)
 #endif
 
 	if (ret) {
-		fprintf(stderr, "get_target_pages() failed\n");
+		err("get_target_pages() failed\n");
 		return ret;
 	}
 
-	fprintf(stdout, "[i] download took %lu ms\n", diff_ms(&ts));
-	fprintf(stdout, "[i] stored at %s/pages-%d.img\n", dump_dir, pid);
+	log("download took %lu ms\n", diff_ms(&ts));
+	log("stored at %s/pages-%d.img\n", dump_dir, pid);
 
 	get_target_rss(pid, &vms_b);
 
@@ -1903,13 +1945,13 @@ static int cmd_restore(pid_t pid)
 		md5_init(&md5_restore_ctx);
 #endif
 
-	fprintf(stdout, "[+] uploading pages\n");
+	msg("uploading pages\n");
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	ret = target_set_pages(pid);
-	fprintf(stdout, "[i] upload took %lu ms\n", diff_ms(&ts));
+	log("upload took %lu ms\n", diff_ms(&ts));
 
 	if (ret) {
-		fprintf(stderr, "target_set_pages() failed\n");
+		err("target_set_pages() failed\n");
 		return ret;
 	}
 
@@ -1917,14 +1959,14 @@ static int cmd_restore(pid_t pid)
 	if (checksum) {
 		md5_final(md5_restore_digest, &md5_restore_digest_len, &md5_restore_ctx);
 		unsigned char *b = md5_checkpoint_digest;
-		fprintf(stdout, "[+] checkpoint crc: ");
+		msg("checkpoint crc: ");
 		for (unsigned int i=0; i<md5_checkpoint_digest_len; ++i)
 			fprintf(stdout, "%X ", b[i]);
 
 		fprintf(stdout, "\n");
 
 		b = md5_restore_digest;
-		fprintf(stdout, "[+] restore crc: ");
+		msg("restore crc: ");
 		for (unsigned int i=0; i<md5_restore_digest_len; ++i)
 			fprintf(stdout, "%X ", b[i]);
 
@@ -1934,13 +1976,13 @@ static int cmd_restore(pid_t pid)
 			|| (md5_restore_digest_len == 0)
 			|| (md5_checkpoint_digest_len != md5_restore_digest_len)
 			|| (memcmp(md5_checkpoint_digest, md5_restore_digest, md5_restore_digest_len) != 0) ) {
-			fprintf(stderr, "[-] Checksum mismatch! Checkpoint and restore digests differ!\n");
+			err("Checksum mismatch! Checkpoint and restore digests differ!\n");
 			return 1;
 		}
 	}
 #endif
 
-	fprintf(stdout, "[+] mprotect on\n");
+	msg("mprotect on\n");
 	target_mprotect_on(pid);
 
 	/*
@@ -1984,7 +2026,7 @@ static int peek(pid_t pid, unsigned long *addr, unsigned long *dst, size_t len)
 		errno = 0;
 		dst[i] = ptrace(PTRACE_PEEKDATA, pid, addr + i, NULL);
 		if (errno) {
-			fprintf(stderr, "[-] %s() failed addr %p, dst %p, i %d: %m\n", __func__, addr, dst, i);
+			err("%s() failed addr %p, dst %p, i %d: %m\n", __func__, addr, dst, i);
 			return errno;
 		}
 	}
@@ -2003,7 +2045,7 @@ static int poke(pid_t pid, unsigned long *addr, unsigned long *src, size_t len)
 	for (i = 0; i < (len / sizeof(unsigned long)); i++) {
 		ret = ptrace(PTRACE_POKEDATA, pid, addr + i, *(src + i));
 		if (ret) {
-			fprintf(stderr, "[-] %s() failed addr %p, src %p, i %d: %m\n", __func__, addr, src, i);
+			err("%s() failed addr %p, src %p, i %d: %m\n", __func__, addr, src, i);
 			break;
 		}
 	}
@@ -2039,13 +2081,13 @@ retry:
 	if (WSTOPSIG(status) != SIGTRAP || SI_FROMUSER(&si)) {
 		/*
 		 * The only other thing which can happen is signal
-		 * delivery.  Restore registers so that signal frame
+		 * delivery.  Restore registers so that signal frame
 		 * preparation operates on the original state, schedule
 		 * INTERRUPT and let the delivery happen.
 		 *
 		 * If the signal has user handler, signal code will
 		 * schedule handler by modifying userland memory and
-		 * registers and return to jobctl trap.  STOP handling will
+		 * registers and return to jobctl trap.  STOP handling will
 		 * modify jobctl state and also return to jobctl trap and
 		 * there isn't much we can do about KILL handling.
 		 *
@@ -2058,7 +2100,7 @@ retry:
 		 * operation with side effects.
 		 */
 	retry_signal:
-		printf("[i] delivering signal %d si_code %d\n", si.si_signo, si.si_code);
+		log("delivering signal %d si_code %d\n", si.si_signo, si.si_code);
 
 		write_cpu_regs(ctx->pid, &saved_regs);
 
@@ -2068,7 +2110,7 @@ retry:
 		/* wait for trap */
 		assert(wait4(ctx->pid, &status, __WALL, NULL) == ctx->pid);
 		if (WIFSIGNALED(status)) {
-			fprintf(stderr, "[-] target pid %d terminated by signal %d%s\n", ctx->pid, WTERMSIG(status), WCOREDUMP(status) ? " (core dumped)" : " ");
+			err("target pid %d terminated by signal %d%s\n", ctx->pid, WTERMSIG(status), WCOREDUMP(status) ? " (core dumped)" : " ");
 			return -1;
 		}
 
@@ -2138,16 +2180,16 @@ static void *parasite_watch_thread(void *ptr)
 
 	ret = ptrace(PTRACE_SEIZE, pid, NULL, 0);
 	if (ret) {
-		fprintf(stderr, "[-] seize of %ld failed: %m\n", pid);
+		err("seize of %ld failed: %m\n", pid);
 		/* TODO */
 		return NULL;
 	}
 
-	printf("[+] watching parasite %ld\n", pid);
+	msg("watching parasite %ld\n", pid);
 
 	ret = wait4(pid, &status, __WALL, NULL);
 	if (ret != pid) {
-		fprintf(stderr, "[-] wait4() ret %d != parasite %ld, errno %m\n", ret, pid);
+		err("wait4() ret %d != parasite %ld, errno %m\n", ret, pid);
 		return NULL;
 	}
 
@@ -2162,7 +2204,7 @@ static int parasite_watch_start(pid_t pid)
 
 	ret = pthread_create(&parasite_watch.thread_id, NULL, parasite_watch_thread, (void *)(unsigned long)pid);
 	if (ret)
-		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
+		err("[-] pthread_create() failed: %d\n", ret);
 
 	return ret;
 }
@@ -2175,13 +2217,13 @@ static int signals_block(pid_t pid)
 
 	assert(pid == ctx.pid);
 
-	printf("[+] blocking signals\n");
+	msg("blocking signals\n");
 	sigset_new = -1;
 	poke(ctx.pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
 	peek(ctx.pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
 #if DEBUG_SIGSET
-	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
+	log(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
 	ctx.sigset = sigset_old;
 	assert(!ret);
@@ -2199,7 +2241,7 @@ static int signals_unblock(pid_t pid)
 
 	assert(pid == ctx.pid);
 
-	printf("[+] unblocking signals\n");
+	msg("unblocking signals\n");
 	sigset_new = ctx.sigset;
 	poke(ctx.pid, ctx.sp, (unsigned long *)&sigset_new, sizeof(sigset_new));
 	ret = execute_blob(&ctx, sigprocmask_blob, sigprocmask_blob_size, (unsigned long)ctx.sp, 0);
@@ -2207,7 +2249,7 @@ static int signals_unblock(pid_t pid)
 		return ret;
 #if DEBUG_SIGSET
 	peek(pid, ctx.sp, (unsigned long *)&sigset_old, sizeof(sigset_old));
-	printf(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
+	log(" = %#lx, %016" PRIx64 " -> %016" PRIx64 "\n", ret, sigset_old, sigset_new);
 #endif
 
 	return 0;
@@ -2272,7 +2314,7 @@ static int execute_parasite_checkpoint(pid_t pid)
 	ret = execute_blob(&ctx, mmap_blob, mmap_blob_size, sizeof(parasite_blob), 0);
 	/* the executed mmap_blob calls directly mmap syscall, which returns errors in range -1 to -4095 */
 	if (IS_ERR_VALUE(ret)) {
-		fprintf(stdout, "[-] mmap blob failed: %lx\n", ret);
+		err("mmap blob failed: %lx\n", ret);
 		signals_unblock(pid);
 		ctx_restore(pid);
 		return -1;
@@ -2306,7 +2348,7 @@ static int execute_parasite_restore(pid_t pid)
 
 	err = cmd_restore(pid);
 	if (err) {
-		fprintf(stderr, "[-] cmd_restore() failed: %d\n", err);
+		err("cmd_restore() failed: %d\n", err);
 		return err;
 	}
 
@@ -2321,13 +2363,13 @@ static int execute_parasite_restore(pid_t pid)
 	/* parasite is done, munmap parasite_blob area */
 	ret = execute_blob(&ctx, munmap_blob, munmap_blob_size, (unsigned long)ctx.blob, sizeof(parasite_blob));
 	if (ret) {
-		fprintf(stderr, "[-] munmap blob failed: %ld\n", ret);
+		err("munmap blob failed: %ld\n", ret);
 		return ret;
 	}
 
 	ret = signals_unblock(pid);
 	if (ret) {
-		fprintf(stderr, "[-] signals_unblock() failed: %ld\n", ret);
+		err("signals_unblock() failed: %ld\n", ret);
 		return ret;
 	}
 
@@ -2364,18 +2406,18 @@ static void sigchld_handler_service(int sig, siginfo_t *sip, void *notused)
 static void sigchld_handler_worker(int signal)
 {
 	pid_t pid;
-	int   status;
+	int status;
 
 	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-		fprintf(stdout, "[%d] SIHCHLD received for %d...\n", getpid(), pid);
+		log("[%d] SIHCHLD received for %d...\n", getpid(), pid);
 	}
-	fprintf(stdout, "[%d] Tracee killed, worker exit!\n", getpid());
+	log("[%d] Tracee killed, worker exit!\n", getpid());
 	exit(0);
 }
 
 static void sigpipe_handler(int sig, siginfo_t *sip, void *notused)
 {
-	fprintf(stdout, "[!] program received SIGPIPE from %d.\n", sip->si_pid);
+	err("program received SIGPIPE from %d.\n", sip->si_pid);
 }
 
 static int read_command(int cd, struct service_command *svc_cmd)
@@ -2384,7 +2426,7 @@ static int read_command(int cd, struct service_command *svc_cmd)
 
 	ret = _read(cd, svc_cmd, sizeof(struct service_command));
 	if (ret != sizeof(struct service_command)) {
-		fprintf(stderr, "[-] %s(): ret %d, errno %m\n", __func__, ret);
+		err("%s(): ret %d, errno %m\n", __func__, ret);
 		return -1;
 	}
 
@@ -2398,7 +2440,7 @@ static int send_response_to_client(int cd, memcr_svc_response resp_code)
 
 	ret = _write(cd, &svc_resp, sizeof(svc_resp));
 	if (ret != sizeof(svc_resp)) {
-		fprintf(stderr, "[-] %s(): error sending response!\n", __func__);
+		err("%s(): error sending response!\n", __func__);
 		return -1;
 	}
 
@@ -2412,7 +2454,7 @@ static int send_response_to_service(int fd, int status)
 
 	svc_resp.resp_code = status ? MEMCR_ERROR_GENERAL : MEMCR_OK;
 
-	fprintf(stdout, "[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
+	log("[%d] Sending %s response.\n", getpid(), (status ? "ERROR" : "OK"));
 	ret = _write(fd, &svc_resp, sizeof(struct service_response));
 	if (ret != sizeof(svc_resp))
 		return -1;
@@ -2452,35 +2494,35 @@ static int setup_restore_socket_worker(pid_t pid)
 
 	rsd = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (rsd < 0) {
-		fprintf(stderr, "%s() failed on socket setup.\n", __func__);
+		err("%s() failed on socket setup.\n", __func__);
 		return rsd;
 	}
 
 	if (addr_restore.sun_path[0] != '\0') {
 		ret = fchmod(rsd, S_IRUSR | S_IWUSR);
 		if (ret) {
-			fprintf(stderr, "fchmod() failed: %d\n", errno);
-			return  ret;
+			err("fchmod() failed: %d\n", errno);
+			return ret;
 		}
 	}
 
 	ret = bind(rsd, (struct sockaddr *)&addr_restore, sizeof(addr_restore));
 	if (ret < 0) {
-		fprintf(stderr, "%s() failed on socket bind.\n", __func__);
+		err("%s() failed on socket bind.\n", __func__);
 		return ret;
 	}
 
 	if (addr_restore.sun_path[0] != '\0') {
 		ret = chmod(addr_restore.sun_path, S_IRUSR | S_IWUSR);
 		if (ret) {
-			fprintf(stderr, "chmod() failed: %d\n", errno);
-			return  ret;
+			err("chmod() failed: %d\n", errno);
+			return ret;
 		}
 	}
 
 	ret = listen(rsd, 8);
 	if (ret < 0) {
-		fprintf(stderr, "%s() failed on socket listen.\n", __func__);
+		err("%s() failed on socket listen.\n", __func__);
 		return ret;
 	}
 
@@ -2494,13 +2536,13 @@ static int setup_restore_socket_service(pid_t pid)
 
 	rd = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (rd < 0) {
-		fprintf(stderr, "socket() %s failed: %m\n", addr_restore.sun_path + 1);
+		err("socket() %s failed: %m\n", addr_restore.sun_path + 1);
 		return rd;
 	}
 
 	ret = connect(rd, (struct sockaddr *)&addr_restore, sizeof(struct sockaddr_un));
 	if (ret < 0) {
-		fprintf(stderr, "connect() to %s failed: %m\n", addr_restore.sun_path + 1);
+		err("connect() to %s failed: %m\n", addr_restore.sun_path + 1);
 		close(rd);
 		return ret;
 	}
@@ -2520,7 +2562,7 @@ static int checkpoint_worker(pid_t pid)
 
 out:
 	if (ret) {
-		fprintf(stderr, "[%d] %s() Checkpoint failed! Killing the target PID %d...\n", getpid(), __func__, pid);
+		err("[%d] %s() Checkpoint failed! Killing the target PID %d...\n", getpid(), __func__, pid);
 		kill(pid, SIGKILL);
 		cleanup_pid(pid);
 		return ret;
@@ -2538,18 +2580,18 @@ static int restore_worker(int rd)
 	ret = read_command(rd, &post_checkpoint_cmd);
 
 	if (ret < 0 || MEMCR_RESTORE != post_checkpoint_cmd.cmd) {
-		fprintf(stdout, "[%d] Error reading restore command!\n", getpid());
+		err("[%d] Error reading restore command!\n", getpid());
 		goto out;
 	}
 
-	fprintf(stdout, "[%d] Worker received RESTORE command for %d.\n", getpid(), post_checkpoint_cmd.pid);
+	log("[%d] Worker received RESTORE command for %d.\n", getpid(), post_checkpoint_cmd.pid);
 
 	signal(SIGCHLD, SIG_DFL);
 	ret = execute_parasite_restore(post_checkpoint_cmd.pid);
 
 out:
 	if (ret) {
-		fprintf(stderr, "[%d] %s() Restore failed! Killing the target PID %d...\n", getpid(), __func__, post_checkpoint_cmd.pid);
+		err("[%d] %s() Restore failed! Killing the target PID %d...\n", getpid(), __func__, post_checkpoint_cmd.pid);
 		kill(post_checkpoint_cmd.pid, SIGKILL);
 	}
 	unseize_target();
@@ -2562,7 +2604,7 @@ static int application_worker(pid_t pid, int checkpoint_resp_socket)
 {
 	int rsd, rd, ret = 0;
 
-	fprintf(stdout, "[%d] memcr worker is started to checkpoint %d.\n", getpid(), pid);
+	log("[%d] memcr worker is started to checkpoint %d.\n", getpid(), pid);
 
 	rsd = setup_restore_socket_worker(pid);
 	if (rsd < 0)
@@ -2578,15 +2620,15 @@ static int application_worker(pid_t pid, int checkpoint_resp_socket)
 	close(checkpoint_resp_socket);
 
 	if (ret) {
-		fprintf(stderr, "[%d] Process %d checkpoint failed! Aborting procedure.\n", getpid(), pid);
+		err("[%d] Process %d checkpoint failed! Aborting procedure.\n", getpid(), pid);
 		close(rsd);
 		return ret;
 	}
 
-	fprintf(stdout, "[%d] Waiting for restore command...\n", getpid());
+	log("[%d] Waiting for restore command...\n", getpid());
 	rd = accept(rsd, NULL, NULL);
 	if (rd < 0) {
-		fprintf(stderr, "%s() failed on socket accept.\n", __func__);
+		err("%s() failed on socket accept.\n", __func__);
 		close(rsd);
 		return rd;
 	}
@@ -2597,7 +2639,7 @@ static int application_worker(pid_t pid, int checkpoint_resp_socket)
 	close(rsd);
 	close(rd);
 	remove_restore_socket_worker(pid);
-	fprintf(stdout, "[%d] Worker ends.\n", getpid());
+	log("[%d] Worker ends.\n", getpid());
 
 	return ret;
 }
@@ -2611,17 +2653,17 @@ static void try_to_abort_checkpoint(pid_t pid)
 				case STATE_RESTORED:
 					/* checkpoint not yet handled, set abort flag only */
 					checkpoint_service_data[i].checkpoint_abort = TRUE;
-					fprintf(stdout, "[+] Checkpoint cmd pending, abort requested for: %d\n", pid);
+					msg("Checkpoint cmd pending, abort requested for: %d\n", pid);
 					break;
 				case STATE_CHECKPOINTING:
 					/* checkpoint ongoing, sent abort cmd */
 					send_checkpoint_abort(checkpoint_service_data[i].checkpoint_cmd_sd);
-					fprintf(stdout, "[+] Checkpoint ongoing, abort requested for: %d\n", pid);
+					msg("Checkpoint ongoing, abort requested for: %d\n", pid);
 					break;
 				case STATE_CHECKPOINTED:
 				default:
 					/* nothing to abort */
-					fprintf(stdout, "[+] Nothing to abort\n");
+					msg("Nothing to abort\n");
 			}
 			pthread_mutex_unlock(&checkpoint_service_data_lock);
 			return;
@@ -2635,22 +2677,22 @@ static int checkpoint_procedure_service(int checkpointSocket, int cd, int pid, i
 	struct service_response svc_resp;
 
 	if (timeout) {
-		fprintf(stdout, "[+] Service waiting for worker checkpoint with timeout %d[s]...\n", timeout);
+		msg("Service waiting for worker checkpoint with timeout %d[s]...\n", timeout);
 		struct timeval rcv_timeout = { .tv_sec = timeout, .tv_usec = 0 };
 		ret = setsockopt(checkpointSocket, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
 		if (ret < 0)
-			fprintf(stderr, "[-] Error setting socket timeout: %m, waiting forever!\n");
+			err("Error setting socket timeout: %m, waiting forever!\n");
 	} else
-		fprintf(stdout, "[+] Service waiting for worker checkpoint...\n");
+		msg("Service waiting for worker checkpoint...\n");
 
 	ret = _read(checkpointSocket, &svc_resp, sizeof(svc_resp)); // receive resp from child
 
 	if (ret == sizeof(svc_resp)) {
-		fprintf(stdout, "[+] Service received checkpoint response, informing client...\n");
+		msg("Service received checkpoint response, informing client...\n");
 		send_response_to_client(cd, svc_resp.resp_code);
 		return svc_resp.resp_code;
 	} else {
-		fprintf(stderr, "[!] Error reading checkpoint response from worker!\n");
+		err("Error reading checkpoint response from worker!\n");
 		// unable to read response from worker, kill both
 		kill(pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
@@ -2667,30 +2709,30 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd, in
 
 	rd = setup_restore_socket_service(svc_cmd.pid);
 	if (rd < 0) {
-		fprintf(stderr, "[!] Error in setup restore connection to worker!\n");
+		err("Error in setup restore connection to worker!\n");
 		ret = -1;
 	}
 
 	ret = _write(rd, &svc_cmd, sizeof(struct service_command)); // send restore to service
 	if (ret != sizeof(struct service_command)) {
-		fprintf(stderr, "[-] %s() write() svc_cmd failed: ret %d\n", __func__, ret);
+		err("%s() write() svc_cmd failed: ret %d\n", __func__, ret);
 		ret = -1;
 	}
 
 	if (timeout) {
-		fprintf(stdout, "[+] Service waiting for worker to restore with timeout %d[s]...\n", timeout);
+		msg("Service waiting for worker to restore with timeout %d[s]...\n", timeout);
 		struct timeval rcv_timeout = { .tv_sec = timeout, .tv_usec = 0 };
 		ret = setsockopt(rd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
 		if (ret < 0)
-			fprintf(stderr, "[-] Error setting socket timeout: %m, waiting forever!\n");
+			err("Error setting socket timeout: %m, waiting forever!\n");
 	} else
-		fprintf(stdout, "[+] Service waiting for worker to restore... \n");
+		msg("Service waiting for worker to restore... \n");
 
 	ret = _read(rd, &svc_resp, sizeof(struct service_response));   // read response from service
 	close(rd);
 
 	if (ret != sizeof(struct service_response)) {
-		fprintf(stderr, "[-] %s() read() svc_resp failed: ret %d\n", __func__, ret);
+		err("%s() read() svc_resp failed: ret %d\n", __func__, ret);
 		// unable to read response from worker, kill both
 		kill(svc_cmd.pid, SIGKILL);
 		kill(worker_pid, SIGKILL);
@@ -2699,10 +2741,10 @@ static void restore_procedure_service(int cd, struct service_command svc_cmd, in
 	}
 
 	if (-1 == ret || MEMCR_OK != svc_resp.resp_code) {
-		fprintf(stderr, "[!] There were errors during restore procedure, sending ERROR response to client!\n");
+		err("There were errors during restore procedure, sending ERROR response to client!\n");
 		send_response_to_client(cd, MEMCR_ERROR_GENERAL);
 	} else {
-		fprintf(stdout, "[i] Restore procedure finished. Sending OK response to client.\n");
+		log("Restore procedure finished. Sending OK response to client.\n");
 		send_response_to_client(cd, MEMCR_OK);
 	}
 }
@@ -2733,18 +2775,18 @@ retry:
 
 	ret = service_cmds_wait_and_pop_front(&svc_ctx);
 	if (ret) {
-		fprintf(stdout, "[+] Service cmd thread finished\n");
+		msg("Service cmd thread finished\n");
 		return NULL;
 	}
 
 	switch (svc_ctx.svc_cmd.cmd) {
 		case MEMCR_CHECKPOINT: {
-			fprintf(stdout, "[+] handling MEMCR_CHECKPOINT for %d.\n", svc_ctx.svc_cmd.pid);
+			mil("handling MEMCR_CHECKPOINT for %d.\n", svc_ctx.svc_cmd.pid);
 
 			int checkpoint_resp_sockets[2];
 			ret = socketpair(AF_UNIX, SOCK_STREAM, 0, checkpoint_resp_sockets);
 			if (ret < 0) {
-				fprintf(stderr, "%s(): Error in socketpair creation!\n", __func__);
+				err("%s(): Error in socketpair creation!\n", __func__);
 				return NULL;
 			}
 
@@ -2768,17 +2810,17 @@ retry:
 
 				close(checkpoint_resp_sockets[0]);
 			} else {
-				fprintf(stderr, "%s(): Fork error!\n", __func__);
+				err("%s(): Fork error!\n", __func__);
 				clear_pid_checkpoint_data(svc_ctx.svc_cmd.pid);
 			}
 
 			break;
 		}
 		case MEMCR_RESTORE: {
-			fprintf(stdout, "[+] handling MEMCR_RESTORE for %d.\n", svc_ctx.svc_cmd.pid);
+			mil("handling MEMCR_RESTORE for %d.\n", svc_ctx.svc_cmd.pid);
 			int worker_pid = get_pid_worker(svc_ctx.svc_cmd.pid);
 			if (worker_pid == PID_INVALID) {
-				fprintf(stderr, "%s(): Error, worker pid not found for %d!\n", __func__, svc_ctx.svc_cmd.pid);
+				err("%s(): Error, worker pid not found for %d!\n", __func__, svc_ctx.svc_cmd.pid);
 				send_response_to_client(svc_ctx.cd, MEMCR_ERROR_GENERAL);
 				close(svc_ctx.cd);
 				break;
@@ -2788,12 +2830,12 @@ retry:
 			break;
 		}
 		default:
-			fprintf(stderr, "%s() unexpected command %d\n", __func__, svc_ctx.svc_cmd.cmd);
+			err("%s() unexpected command %d\n", __func__, svc_ctx.svc_cmd.cmd);
 			break;
 	}
 
 	close(svc_ctx.cd);
-	fprintf(stdout, "[+] cmd handled for %d. \n", svc_ctx.svc_cmd.pid);
+	mil("cmd handled for %d. \n", svc_ctx.svc_cmd.pid);
 
 	goto retry;
 }
@@ -2805,11 +2847,11 @@ static void service_command(struct service_command_ctx *svc_ctx)
 	{
 	case MEMCR_CHECKPOINT:
 	{
-		fprintf(stdout, "[+] got MEMCR_CHECKPOINT for %d.\n", svc_ctx->svc_cmd.pid);
+		mil("got MEMCR_CHECKPOINT for %d.\n", svc_ctx->svc_cmd.pid);
 
 		if (!can_checkpoint_pid(svc_ctx->svc_cmd.pid))
 		{
-			fprintf(stdout, "[i] Process %d is already checkpointed or checkpoint is ongoing!\n", svc_ctx->svc_cmd.pid);
+			err("Process %d is already checkpointed or checkpoint is ongoing!\n", svc_ctx->svc_cmd.pid);
 			send_response_to_client(svc_ctx->cd, MEMCR_INVALID_PID);
 			close(svc_ctx->cd);
 			break;
@@ -2818,9 +2860,9 @@ static void service_command(struct service_command_ctx *svc_ctx)
 		init_pid_checkpoint_data(svc_ctx->svc_cmd.pid);
 		ret = service_cmds_push_back(svc_ctx);
 		if (!ret)
-			fprintf(stdout, "[+] Checkpoint request scheduled...\n");
+			msg("Checkpoint request scheduled...\n");
 		else {
-			fprintf(stdout, "[+] Checkpoint request schedule error.\n");
+			err("Checkpoint request schedule error.\n");
 			clear_pid_checkpoint_data(svc_ctx->svc_cmd.pid);
 			send_response_to_client(svc_ctx->cd, MEMCR_ERROR_GENERAL);
 			close(svc_ctx->cd);
@@ -2829,11 +2871,11 @@ static void service_command(struct service_command_ctx *svc_ctx)
 	}
 	case MEMCR_RESTORE:
 	{
-		fprintf(stdout, "[+] got MEMCR_RESTORE for %d.\n", svc_ctx->svc_cmd.pid);
+		mil("got MEMCR_RESTORE for %d.\n", svc_ctx->svc_cmd.pid);
 
 		if (!can_restore_pid(svc_ctx->svc_cmd.pid))
 		{
-			fprintf(stdout, "[i] Process %d is not checkpointed!\n", svc_ctx->svc_cmd.pid);
+			err("Process %d is not checkpointed!\n", svc_ctx->svc_cmd.pid);
 			send_response_to_client(svc_ctx->cd, MEMCR_INVALID_PID);
 			close(svc_ctx->cd);
 			break;
@@ -2842,16 +2884,16 @@ static void service_command(struct service_command_ctx *svc_ctx)
 		try_to_abort_checkpoint(svc_ctx->svc_cmd.pid);
 		int ret = service_cmds_push_back(svc_ctx);
 		if (!ret)
-			fprintf(stdout, "[+] Restore request scheduled...\n");
+			msg("Restore request scheduled...\n");
 		else {
-			fprintf(stdout, "[+] Restore request schedule error.\n");
+			err("Restore request schedule error.\n");
 			send_response_to_client(svc_ctx->cd, MEMCR_ERROR_GENERAL);
 			close(svc_ctx->cd);
 		}
 		break;
 	}
 	default:
-		fprintf(stderr, "%s() unexpected command %d\n", __func__, svc_ctx->svc_cmd.cmd);
+		err("%s() unexpected command %d\n", __func__, svc_ctx->svc_cmd.cmd);
 		send_response_to_client(svc_ctx->cd, MEMCR_ERROR_GENERAL);
 		close(svc_ctx->cd);
 		break;
@@ -2882,11 +2924,11 @@ static int service_mode(const char *listen_location, const int gid)
 
 	ret = pthread_create(&svc_cmd_thread_id, NULL, service_command_thread, NULL);
 	if (ret) {
-		fprintf(stderr, "[-] pthread_create() failed: %d\n", ret);
+		err("pthread_create() failed: %d\n", ret);
 		goto err;
 	}
 
-	fprintf(stdout, "[x] Waiting for a checkpoint command on a socket\n");
+	mil("Waiting for a checkpoint command on a socket\n");
 
 	while (!interrupted) {
 		FD_ZERO(&readfds);
@@ -2898,7 +2940,7 @@ static int service_mode(const char *listen_location, const int gid)
 		ret = select(csd+1, &readfds , NULL , NULL , &tv);
 		errsv = errno;
 		if ((ret < 0) && (errsv != EINTR)) {
-			fprintf(stderr, "[-] Error on socket select: %d\n", errsv);
+			err("Error on socket select: %d\n", errsv);
 			break;
 		}
 
@@ -2910,7 +2952,7 @@ static int service_mode(const char *listen_location, const int gid)
 			struct service_command_ctx svc_ctx = { .cd = cd };
 			ret = read_command(cd, &svc_ctx.svc_cmd);
 			if (ret < 0) {
-				fprintf(stderr, "%s(): Error reading a command!\n", __func__);
+				err("%s(): Error reading a command!\n", __func__);
 				close(cd);
 				continue;
 			}
@@ -2921,7 +2963,7 @@ static int service_mode(const char *listen_location, const int gid)
 
 		errsv = errno;
 		if (errsv != EAGAIN || errsv != EWOULDBLOCK) {
-			fprintf(stdout, "[-] Error on socket accept: %d\n", errsv);
+			err("Error on socket accept: %d\n", errsv);
 			break;
 		}
 	}
@@ -2950,37 +2992,41 @@ static int user_interactive_mode(pid_t pid)
 
 	ret = execute_parasite_checkpoint(pid);
 	if (ret) {
-		fprintf(stderr, "[!] Parasite checkpoint failed: %d!\n", ret);
+		err("Parasite checkpoint failed: %d!\n", ret);
 		goto out;
 	}
 
 	if (!no_wait && !interrupted) {
+#if LOG_LEVEL >= 2
 		long dms;
 		long h, m, s, ms;
+#endif
 		struct timespec ts;
 
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 
-		fprintf(stdout, "[x] --> press enter to restore process memory and unfreeze <--\n");
+		mil("--> press enter to restore process memory and unfreeze <--\n");
 		fgetc(stdin);
 
+#if LOG_LEVEL >= 2
 		dms = diff_ms(&ts);
 		h = dms/1000/60/60;
 		m = (dms/1000/60) % 60;
 		s = (dms/1000) % 60;
 		ms = dms % 1000;
-		fprintf(stdout, "[i] slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+		log("slept for %02lu:%02lu:%02lu.%03lu (%lu ms)\n", h, m, s, ms, dms);
+#endif
 	}
 
 	ret = execute_parasite_restore(pid);
 	if (ret) {
-		fprintf(stderr, "[!] Parasite restore failed: %d!\n", ret);
+		err("Parasite restore failed: %d!\n", ret);
 		goto out;
 	}
 
 out:
 	if (ret) {
-		fprintf(stderr, "[!] Killing the target PID %d...\n", pid);
+		err("Killing the target PID %d...\n", pid);
 		kill(pid, SIGKILL);
 	}
 
@@ -3000,7 +3046,7 @@ static void print_version(void)
 	if (!ret)
 		snprintf(buf, sizeof(buf), " kernel %s %s", utsn.release, utsn.machine);
 
-	fprintf(stdout, "[i] memcr %s %s%s\n", GIT_VERSION, ARCH_NAME, buf);
+	mil("memcr %s %s%s\n", GIT_VERSION, ARCH_NAME, buf);
 }
 
 static void usage(const char *name, int status)
@@ -3200,4 +3246,3 @@ int main(int argc, char *argv[])
 
 	return ret;
 }
-
